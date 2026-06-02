@@ -1,6 +1,10 @@
-# SwitchDex
+<p align="center">
+  <img src="brand/logo.svg" width="96" height="96" alt="SwitchDex logo">
+</p>
 
-**Open-source network infrastructure monitoring for small business.**
+<h1 align="center">SwitchDex</h1>
+
+<p align="center"><strong>Open-source network infrastructure monitoring for small business.</strong></p>
 
 SwitchDex is a vendor-neutral platform for discovering, monitoring, and managing
 your network — switches, routers, firewalls — plus read-only visibility into
