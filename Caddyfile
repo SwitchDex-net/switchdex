@@ -1,9 +1,22 @@
 # Caddy terminates TLS, serves the built frontend, and proxies the API +
-# WebSocket SSH stream to the backend. Caddy auto-provisions a certificate
-# (internal CA for IP/localhost, Let's Encrypt for a real DNS name).
+# WebSocket SSH stream to the backend.
+#
+# TLS strategy:
+#   - A real DNS name in PUBLIC_HOSTNAME -> Caddy gets a Let's Encrypt cert.
+#   - A bare IP or "localhost"           -> Caddy serves a self-signed cert
+#     from its internal CA.
+#
+# default_sni is required for the bare-IP case: browsers and curl do NOT send
+# SNI when connecting to an IP address, so without this Caddy can't decide
+# which certificate to present and aborts the handshake with a TLS "internal
+# error". Pinning default_sni to the configured hostname makes the IP work.
+
+{
+	default_sni {$PUBLIC_HOSTNAME:localhost}
+}
 
 {$PUBLIC_HOSTNAME:localhost} {
-	# internal CA self-signed cert when no public DNS name is set
+	# self-signed cert from Caddy's internal CA (used for IP / localhost)
 	tls internal
 
 	# API + WebSocket -> FastAPI backend

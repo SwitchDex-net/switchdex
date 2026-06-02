@@ -44,15 +44,25 @@ separately-hosted frontend at the backend, set before the app loads:
 <script>window.SWITCHDEX_API = "https://nms.example.com"</script>
 ```
 
-## Building the frontend into the appliance
+## Building the frontend
 
-The Caddyfile serves static files from `/srv/www`. Build the React app and place
-the output there (the appliance image bakes this in during `provision.sh`):
+The frontend is a Vite project. The `caddy` service in `docker-compose.yml`
+builds it via `frontend/Dockerfile` (a multi-stage build: Node compiles the app,
+then the output is copied into Caddy's `/srv/www`). So a plain `docker compose
+up -d --build` produces a working UI — no manual build step.
 
 ```bash
-npm run build           # vite/CRA → dist/ or build/
-# copy the output to the image's /srv/www (mounted into the caddy container)
+# local dev (hot reload, talks to a backend at /api via Vite proxy or same origin)
+cd frontend && npm install && npm run dev
+
+# production build (what the Docker image runs)
+npm run build           # -> frontend/dist/
 ```
+
+`src/App.jsx` is the application; `src/main.jsx` mounts it. `switchdex.jsx` is
+kept as the standalone single-file demo (it is excluded from the image build via
+`.dockerignore`). `MOCK_MODE` is build-time: the production image defaults to
+real-backend mode; set `VITE_MOCK_MODE=true` at build time for a simulated UI.
 
 `frontend/api.js` in this repo is the standalone version of the same client —
 import it (`import api from "./api"`) in a multi-file project instead of the copy

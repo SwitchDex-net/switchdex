@@ -5,8 +5,10 @@
 services:
   # ── TLS front door + static frontend host + reverse proxy ────────────
   caddy:
-    image: caddy:2-alpine
+    build: ./frontend
     restart: unless-stopped
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
     ports:
       - "80:80"
       - "443:443"
