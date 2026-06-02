@@ -1,0 +1,24 @@
+[Unit]
+Description=SwitchDex first-boot network setup (console wizard)
+After=systemd-user-sessions.service
+Before=switchdex-firstboot.service switchdex.service
+ConditionPathExists=!/opt/switchdex/.netcfg-done
+# Must run before networking settles so a static config takes effect cleanly
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Bind to the primary console so the wizard can read operator input
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+ExecStart=/opt/switchdex/netsetup.sh
+
+[Install]
+WantedBy=multi-user.target

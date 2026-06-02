@@ -1,0 +1,225 @@
+"""
+Controller connectors for closed-ecosystem gear.
+
+Both UniFi and Omada invert SwitchDex's per-device model: you authenticate to a
+controller, which already polls its managed devices, and you pull aggregate
+telemetry from its API. Each connector exposes a uniform shape:
+
+    login()              -> establish a session / token
+    list_devices()       -> [normalized device dicts]
+    device_metrics(ext)  -> {cpu, mem, uptime, ports, clients, ...}
+
+Normalized device dict keys: external_id, name, ip, model, os, device_type,
+status, source ("unifi"/"omada"), capability ("readonly"/"manage").
+
+Set settings.device_backend="sim" to use the built-in fakes (no controller
+required) so the whole integration is demoable end-to-end.
+"""
+import asyncio
+from .config import settings
+
+
+# ───────────────────────── public dispatch ─────────────────────────────
+async def test_controller(ctrl) -> dict:
+    if settings.device_backend == "sim":
+        return {"ok": True, "message": f"Reached {ctrl.kind} controller (simulated)"}
+    try:
+        c = _make(ctrl)
+        await asyncio.to_thread(c.login)
+        n = len(await asyncio.to_thread(c.list_devices))
+        return {"ok": True, "message": f"Connected — {n} devices visible"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "message": str(e)}
+
+
+async def sync_controller(ctrl) -> list[dict]:
+    """Return the controller's current device list (normalized)."""
+    if settings.device_backend == "sim":
+        return _sim_devices(ctrl)
+    c = _make(ctrl)
+    await asyncio.to_thread(c.login)
+    return await asyncio.to_thread(c.list_devices)
+
+
+async def fetch_metrics(ctrl, external_id: str) -> dict:
+    if settings.device_backend == "sim":
+        return _sim_metrics(external_id)
+    c = _make(ctrl)
+    await asyncio.to_thread(c.login)
+    return await asyncio.to_thread(c.device_metrics, external_id)
+
+
+def _make(ctrl):
+    return UniFiConnector(ctrl) if ctrl.kind == "unifi" else OmadaConnector(ctrl)
+
+
+# ───────────────────────── UniFi (read-only) ───────────────────────────
+class UniFiConnector:
+    """UniFi Network Controller REST API. Unofficial but stable; read-only here.
+
+    Auth: POST /api/login (classic) or /api/auth/login (UniFi OS) with
+    username/password -> session cookie. Data under /api/s/<site>/stat/device.
+    """
+    def __init__(self, ctrl):
+        self.ctrl = ctrl
+        self._sess = None
+
+    def login(self):
+        import requests
+        s = requests.Session()
+        s.verify = self.ctrl.verify_tls
+        # UniFi OS prefixes the API; try it, fall back to classic.
+        for path in ("/api/auth/login", "/api/login"):
+            r = s.post(self.ctrl.base_url + path,
+                       json={"username": self.ctrl.username, "password": self.ctrl.password},
+                       timeout=10)
+            if r.ok:
+                self._sess = s
+                return
+        raise RuntimeError("UniFi login failed (check URL/credentials)")
+
+    def _api(self, suffix):
+        # UniFi OS routes through /proxy/network; classic does not.
+        base = self.ctrl.base_url
+        prefix = "/proxy/network" if "/proxy/network" not in base else ""
+        return f"{base}{prefix}/api/s/{self.ctrl.site}{suffix}"
+
+    def list_devices(self):
+        r = self._sess.get(self._api("/stat/device"), timeout=15)
+        r.raise_for_status()
+        out = []
+        for d in r.json().get("data", []):
+            out.append({
+                "external_id": d.get("_id") or d.get("mac"),
+                "name": d.get("name") or d.get("model") or d.get("mac"),
+                "ip": d.get("ip", ""),
+                "vendor": "Ubiquiti",
+                "model": d.get("model", ""),
+                "os": d.get("version", ""),
+                "device_type": _unifi_type(d.get("type")),
+                "status": "up" if d.get("state") == 1 else "down",
+                "source": "unifi",
+                "capability": "readonly",
+            })
+        return out
+
+    def device_metrics(self, ext):
+        r = self._sess.get(self._api("/stat/device"), timeout=15)
+        r.raise_for_status()
+        for d in r.json().get("data", []):
+            if (d.get("_id") or d.get("mac")) == ext:
+                sysstats = d.get("sys_stats", {})
+                return {
+                    "cpu": float(sysstats.get("cpu", 0) or 0),
+                    "mem": float(sysstats.get("mem", 0) or 0),
+                    "uptime": d.get("uptime", 0),
+                    "clients": d.get("num_sta", 0),
+                    "rx_bytes": d.get("rx_bytes", 0),
+                    "tx_bytes": d.get("tx_bytes", 0),
+                    "ports": [
+                        {"idx": p.get("port_idx"), "up": p.get("up"),
+                         "speed": p.get("speed"), "poe": p.get("poe_power"),
+                         "rx": p.get("rx_bytes"), "tx": p.get("tx_bytes")}
+                        for p in d.get("port_table", [])
+                    ],
+                }
+        return {}
+
+
+def _unifi_type(t):
+    return {"usw": "switch", "ugw": "router", "uap": "ap"}.get(t, "switch")
+
+
+# ───────────────────────── Omada (read-only now, write-capable) ─────────
+class OmadaConnector:
+    """TP-Link Omada Open API. Official + documented. client_id/secret ->
+    bearer token. Write operations are supported by the API and reserved for a
+    future managed mode; this connector reads telemetry only for now."""
+    def __init__(self, ctrl):
+        self.ctrl = ctrl
+        self._token = None
+        self._cid = ctrl.controller_ident
+
+    def login(self):
+        import requests
+        self._http = requests.Session()
+        self._http.verify = self.ctrl.verify_tls
+        r = self._http.post(
+            f"{self.ctrl.base_url}/openapi/authorize/token?grant_type=client_credentials",
+            json={"omadacId": self._cid, "client_id": self.ctrl.client_id,
+                  "client_secret": self.ctrl.client_secret},
+            timeout=10,
+        )
+        r.raise_for_status()
+        self._token = r.json()["result"]["accessToken"]
+
+    def _hdr(self):
+        return {"Authorization": f"AccessToken={self._token}"}
+
+    def list_devices(self):
+        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{self.ctrl.site}/devices"
+        r = self._http.get(url, headers=self._hdr(), timeout=15)
+        r.raise_for_status()
+        out = []
+        for d in r.json().get("result", []):
+            out.append({
+                "external_id": d.get("mac"),
+                "name": d.get("name") or d.get("mac"),
+                "ip": d.get("ip", ""),
+                "vendor": "TP-Link",
+                "model": d.get("model", ""),
+                "os": d.get("firmwareVersion", ""),
+                "device_type": _omada_type(d.get("type")),
+                "status": "up" if d.get("status") in (1, "CONNECTED") else "down",
+                "source": "omada",
+                # Omada Open API supports writes -> eligible for managed mode later
+                "capability": "readonly",
+            })
+        return out
+
+    def device_metrics(self, ext):
+        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{self.ctrl.site}/devices/{ext}"
+        r = self._http.get(url, headers=self._hdr(), timeout=15)
+        r.raise_for_status()
+        d = r.json().get("result", {})
+        return {
+            "cpu": float(d.get("cpuUtil", 0) or 0),
+            "mem": float(d.get("memUtil", 0) or 0),
+            "uptime": d.get("uptime", 0),
+            "clients": d.get("clientNum", 0),
+            "ports": [{"idx": p.get("port"), "up": p.get("linkStatus") == 1,
+                       "speed": p.get("linkSpeed"), "poe": p.get("poe")}
+                      for p in d.get("portStats", [])],
+        }
+
+
+def _omada_type(t):
+    return {"switch": "switch", "gateway": "router", "ap": "ap"}.get(str(t).lower(), "switch")
+
+
+# ───────────────────────── simulated fallback ──────────────────────────
+def _sim_devices(ctrl):
+    base = 100 if ctrl.kind == "unifi" else 120
+    vendor = "Ubiquiti" if ctrl.kind == "unifi" else "TP-Link"
+    models = (["USW-Pro-24-PoE", "U6-Enterprise", "UDM-Pro"] if ctrl.kind == "unifi"
+              else ["SG3428MP", "EAP670", "ER7212PC"])
+    types = ["switch", "ap", "router"]
+    out = []
+    for i, (m, t) in enumerate(zip(models, types)):
+        out.append({
+            "external_id": f"{ctrl.kind}-{ctrl.id}-{i}",
+            "name": f"{ctrl.kind}-{t}-{i+1:02d}",
+            "ip": f"10.0.9.{base+i}", "vendor": vendor, "model": m,
+            "os": "v6.6.55" if ctrl.kind == "unifi" else "1.20.0",
+            "device_type": t, "status": "up", "source": ctrl.kind,
+            "capability": "readonly",
+        })
+    return out
+
+
+def _sim_metrics(ext):
+    import random
+    return {"cpu": random.randint(5, 40), "mem": random.randint(20, 60),
+            "uptime": random.randint(100000, 9000000), "clients": random.randint(0, 48),
+            "ports": [{"idx": i, "up": i <= 3, "speed": 1000 if i <= 3 else 0, "poe": 7.4 if i == 1 else 0}
+                      for i in range(1, 9)]}

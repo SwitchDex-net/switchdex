@@ -1,0 +1,165 @@
+"""
+Alert engine.
+
+Each evaluation cycle:
+  1. gather current device state
+  2. for every enabled rule, compute which devices currently violate it
+  3. debounce: a violation must persist `duration` seconds before it fires
+  4. open new alerts (dedup by rule+device), dispatch notifications
+  5. auto-resolve alerts whose condition is no longer true (if rule.auto_resolve)
+
+Preset rules map to built-in conditions; custom rules use metric/operator/threshold.
+Duration state is kept in-memory (`_pending`) keyed by dedup key — fine for a
+single scheduler process, which is how the appliance runs it.
+"""
+import json
+import datetime as dt
+import logging
+
+from sqlalchemy import select
+
+from .db import SessionLocal, Device, AlertRule, Alert, NotifyChannel
+from . import notify
+
+log = logging.getLogger("alerts")
+
+# dedup_key -> first time the condition was observed true (for duration debounce)
+_pending: dict[str, dt.datetime] = {}
+
+
+def _dedup(rule_id, device_id, suffix=""):
+    return f"r{rule_id}:d{device_id}:{suffix}"
+
+
+def _cmp(value, op, threshold):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    return {">": v > threshold, "<": v < threshold, ">=": v >= threshold,
+            "<=": v <= threshold, "==": v == threshold, "!=": v != threshold}.get(op, False)
+
+
+def _violations(rule, devices):
+    """Return list of (device, detail) currently violating this rule."""
+    out = []
+    scope_ids = set()
+    if rule.scope:
+        scope_ids = {int(x) for x in rule.scope.split(",") if x.strip().isdigit()}
+
+    for d in devices:
+        if scope_ids and d.id not in scope_ids:
+            continue
+
+        if rule.preset == "device_down":
+            if d.status == "down":
+                out.append((d, f"{d.name} ({d.ip}) is unreachable"))
+        elif rule.preset == "cpu_high":
+            if d.status != "down" and _cmp(d.cpu if hasattr(d, "cpu") else 0, ">", rule.threshold or 85):
+                out.append((d, f"CPU {getattr(d,'cpu',0)}% exceeds {rule.threshold or 85}%"))
+        elif rule.preset == "mem_high":
+            if d.status != "down" and _cmp(getattr(d, "mem", 0), ">", rule.threshold or 85):
+                out.append((d, f"Memory {getattr(d,'mem',0)}% exceeds {rule.threshold or 85}%"))
+        elif rule.preset == "backup_failed":
+            # surfaced via configstore; placeholder hook for real wiring
+            pass
+        elif rule.preset == "custom":
+            val = getattr(d, rule.metric, None)
+            if val is not None and _cmp(val, rule.operator, rule.threshold):
+                out.append((d, f"{rule.metric} {val} {rule.operator} {rule.threshold}"))
+    return out
+
+
+async def evaluate():
+    """One evaluation pass over all enabled rules."""
+    async with SessionLocal() as s:
+        rules = (await s.execute(select(AlertRule).where(AlertRule.enabled == True))).scalars().all()  # noqa: E712
+        devices = (await s.execute(select(Device))).scalars().all()
+        channels = (await s.execute(select(NotifyChannel))).scalars().all()
+        dev_by_id = {d.id: d for d in devices}
+
+        now = dt.datetime.utcnow()
+        currently_true = set()
+
+        for rule in rules:
+            for dev, detail in _violations(rule, devices):
+                key = _dedup(rule.id, dev.id)
+                currently_true.add(key)
+
+                # debounce by duration
+                first = _pending.get(key)
+                if first is None:
+                    _pending[key] = now
+                    first = now
+                if (now - first).total_seconds() < (rule.duration or 0):
+                    continue  # not held long enough yet
+
+                # already open?
+                existing = (await s.execute(
+                    select(Alert).where(Alert.dedup_key == key, Alert.state != "resolved")
+                )).scalar_one_or_none()
+                if existing:
+                    continue
+
+                alert = Alert(rule_id=rule.id, device_id=dev.id, dedup_key=key,
+                              severity=rule.severity, title=f"{rule.name}: {dev.name}",
+                              detail=detail, state="open", opened_at=now)
+                s.add(alert)
+                await s.commit()
+                await notify.dispatch(channels, {
+                    "severity": rule.severity, "title": alert.title, "detail": detail,
+                    "device": dev.name, "time": now.isoformat() + "Z",
+                })
+                log.info("ALERT opened: %s", alert.title)
+
+        # auto-resolve: open alerts whose condition is no longer true
+        open_alerts = (await s.execute(
+            select(Alert).where(Alert.state != "resolved"))).scalars().all()
+        for a in open_alerts:
+            if a.dedup_key in currently_true:
+                continue
+            _pending.pop(a.dedup_key, None)
+            rule = next((r for r in rules if r.id == a.rule_id), None)
+            if rule is None or rule.auto_resolve:
+                a.state = "resolved"; a.resolved_at = now; a.resolved_by = "auto"
+                log.info("ALERT auto-resolved: %s", a.title)
+        await s.commit()
+
+
+DEFAULT_RULES = [
+    dict(name="Device unreachable", preset="device_down", severity="critical", duration=120, auto_resolve=True),
+    dict(name="High CPU", preset="cpu_high", threshold=85, severity="warning", duration=300, auto_resolve=True),
+    dict(name="High memory", preset="mem_high", threshold=85, severity="warning", duration=300, auto_resolve=True),
+    dict(name="Config changed", preset="config_changed", severity="info", duration=0, auto_resolve=False),
+]
+
+
+async def seed_default_rules():
+    async with SessionLocal() as s:
+        n = (await s.execute(select(AlertRule))).scalars().first()
+        if n is None:
+            for r in DEFAULT_RULES:
+                s.add(AlertRule(**r))
+            await s.commit()
+
+
+async def raise_config_changed(device_id: int, device_name: str, detail: str):
+    """Called by the backup engine when change detection fires, so config
+    changes become first-class alerts/notifications."""
+    async with SessionLocal() as s:
+        rule = (await s.execute(
+            select(AlertRule).where(AlertRule.preset == "config_changed", AlertRule.enabled == True)  # noqa: E712
+        )).scalar_one_or_none()
+        if not rule:
+            return
+        channels = (await s.execute(select(NotifyChannel))).scalars().all()
+        now = dt.datetime.utcnow()
+        key = _dedup(rule.id, device_id, now.strftime("%Y%m%d%H%M%S"))
+        alert = Alert(rule_id=rule.id, device_id=device_id, dedup_key=key,
+                      severity=rule.severity, title=f"Config changed: {device_name}",
+                      detail=detail, state="open", opened_at=now)
+        s.add(alert)
+        await s.commit()
+        await notify.dispatch(channels, {
+            "severity": rule.severity, "title": alert.title, "detail": detail,
+            "device": device_name, "time": now.isoformat() + "Z"})

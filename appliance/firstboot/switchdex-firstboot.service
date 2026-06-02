@@ -1,0 +1,14 @@
+[Unit]
+Description=SwitchDex first-boot configuration
+After=network-online.target docker.service
+Wants=network-online.target
+Before=switchdex.service
+ConditionPathExists=!/opt/switchdex/.firstboot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/switchdex/firstboot.sh
+
+[Install]
+WantedBy=multi-user.target

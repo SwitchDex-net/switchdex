@@ -1,0 +1,29 @@
+# ── Web framework ──
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# ── Database ──
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+
+# ── Scheduling ──
+apscheduler==3.11.0
+
+# ── Config archive (git-backed) ──
+GitPython==3.1.43
+
+# ── Device access (multi-vendor) ──
+napalm==5.0.0          # structured multi-vendor get/replace
+netmiko==4.5.0         # raw CLI for vendors NAPALM doesn't cover
+nornir==3.5.0          # inventory + parallel task orchestration
+nornir-napalm==0.5.0
+nornir-netmiko==1.0.1
+asyncssh==2.18.0       # async interactive shell for the WebSocket SSH proxy
+pysnmp==6.2.6          # SNMP discovery probe
+
+# ── Auth ──
+bcrypt==4.2.1          # local password hashing
+pyjwt==2.10.1          # JWT issue/verify
+ldap3==2.9.1           # LDAP / Active Directory bind

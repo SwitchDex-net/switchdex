@@ -1,0 +1,35 @@
+# ── Secrets / instance config (NEVER commit) ──
+.env
+*.env
+!.env.example
+*.key
+*.pem
+secrets/
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ── Node / frontend ──
+node_modules/
+dist/
+build/
+.vite/
+npm-debug.log*
+
+# ── Appliance build artifacts (large binaries — don't commit) ──
+appliance/packer/output/
+*.qcow2
+*.ova
+*.vmdk
+*.iso
+
+# ── Editor / OS ──
+.DS_Store
+.idea/
+.vscode/
+*.swp

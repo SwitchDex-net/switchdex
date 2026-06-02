@@ -1,0 +1,23 @@
+# Caddy terminates TLS, serves the built frontend, and proxies the API +
+# WebSocket SSH stream to the backend. Caddy auto-provisions a certificate
+# (internal CA for IP/localhost, Let's Encrypt for a real DNS name).
+
+{$PUBLIC_HOSTNAME:localhost} {
+	# internal CA self-signed cert when no public DNS name is set
+	tls internal
+
+	# API + WebSocket -> FastAPI backend
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+	handle /ws/* {
+		reverse_proxy backend:8000
+	}
+
+	# Everything else -> static frontend (built React app baked into the image)
+	handle {
+		root * /srv/www
+		try_files {path} /index.html
+		file_server
+	}
+}
