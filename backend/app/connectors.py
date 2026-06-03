@@ -156,12 +156,42 @@ class OmadaConnector:
     def _hdr(self):
         return {"Authorization": f"AccessToken={self._token}"}
 
+    def _resolve_site_id(self):
+        """Omada's device endpoints want the opaque siteId, not the site name.
+        Look it up from the site list, matching on name (or accept an id if the
+        configured 'site' already looks like one)."""
+        if getattr(self, "_site_id", None):
+            return self._site_id
+        # query sites (paginated); match the configured name
+        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites"
+        r = self._http.get(url, headers=self._hdr(),
+                           params={"page": 1, "pageSize": 100}, timeout=15)
+        r.raise_for_status()
+        result = r.json().get("result", {})
+        sites = result.get("data", result if isinstance(result, list) else [])
+        want = (self.ctrl.site or "").strip()
+        for st in sites:
+            # match by display name, or if the user already entered the id
+            if st.get("name") == want or st.get("siteId") == want or st.get("id") == want:
+                self._site_id = st.get("siteId") or st.get("id")
+                return self._site_id
+        # fall back: if exactly one site, use it; else use what was given
+        if len(sites) == 1:
+            self._site_id = sites[0].get("siteId") or sites[0].get("id")
+            return self._site_id
+        self._site_id = want
+        return self._site_id
+
     def list_devices(self):
-        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{self.ctrl.site}/devices"
+        site_id = self._resolve_site_id()
+        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{site_id}/devices"
         r = self._http.get(url, headers=self._hdr(), timeout=15)
         r.raise_for_status()
+        body = r.json().get("result", [])
+        # result may be a bare list or a paginated {data:[...]}
+        rows = body.get("data", body) if isinstance(body, dict) else body
         out = []
-        for d in r.json().get("result", []):
+        for d in rows:
             out.append({
                 "external_id": d.get("mac"),
                 "name": d.get("name") or d.get("mac"),
@@ -178,7 +208,8 @@ class OmadaConnector:
         return out
 
     def device_metrics(self, ext):
-        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{self.ctrl.site}/devices/{ext}"
+        site_id = self._resolve_site_id()
+        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{site_id}/devices/{ext}"
         r = self._http.get(url, headers=self._hdr(), timeout=15)
         r.raise_for_status()
         d = r.json().get("result", {})
