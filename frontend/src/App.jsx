@@ -324,6 +324,7 @@ tbody tr:hover .row-acts{opacity:1;}
 .pl.sys{color:#484f58;}.pl.ok{color:#3fb950;}.pl.info{color:#58a6ff;}.pl.err{color:#f85149;}
 .pl.spin::before{content:"⠋ ";animation:spin .8s steps(8) infinite;}
 @keyframes spin{0%{content:"⠋ ";}12.5%{content:"⠙ ";}25%{content:"⠹ ";}37.5%{content:"⠸ ";}50%{content:"⠼ ";}62.5%{content:"⠴ ";}75%{content:"⠦ ";}87.5%{content:"⠧ ";}}
+@keyframes sdx-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
 .discovered-card{background:#0d1117;border:1px solid #238636;border-radius:8px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:12px;}
 .disc-info{flex:1;}
 .disc-name{font-size:14px;font-weight:600;color:#e6edf3;}
@@ -1684,14 +1685,23 @@ function AppInner({auth, onLogout}) {
 
   // Real mode: load inventory from the backend on mount.
   const [refreshTick, setRefreshTick] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshStart = useRef(0);
   useEffect(() => {
     if (MOCK_MODE) return;
     let alive = true;
     api.listDevices()
       .then(ds => { if (alive) { setDevices(ds.map(normalizeDevice)); setLoading(false); } })
-      .catch(() => { if (alive) setLoading(false); });
+      .catch(() => { if (alive) setLoading(false); })
+      .finally(() => {
+        // hold the spinner for a visible minimum so a fast fetch still shows it
+        const elapsed = Date.now() - refreshStart.current;
+        const wait = Math.max(0, 1200 - elapsed);
+        setTimeout(() => { if (alive) setRefreshing(false); }, wait);
+      });
     return () => { alive = false; };
   }, [refreshTick]);
+  function doRefresh() { if (refreshing) return; refreshStart.current = Date.now(); setRefreshing(true); setRefreshTick(t => t + 1); }
 
   const sel = devices.find(d=>d.id===selId);
 
@@ -1808,7 +1818,11 @@ function AppInner({auth, onLogout}) {
           <div className="topbar">
             <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Compliance</> : view==="telemetry" ? <>Telemetry</> : <>Device <span>Inventory</span></>}</span>
             {view==="inventory" && <button className="tb-btn" onClick={()=>setShowAdd(true)}>{IC.plus} Add device</button>}
-            <button className="tb-btn" onClick={()=>setRefreshTick(t=>t+1)} title="Reload device data and metrics">{IC.refresh} Refresh</button>
+            <button className="tb-btn" onClick={doRefresh} disabled={refreshing} title="Reload device data and metrics" style={{minWidth:92,justifyContent:"center"}}>
+              {refreshing
+                ? <span style={{display:"inline-flex",animation:"sdx-spin 0.7s linear infinite"}}>{IC.refresh}</span>
+                : <>{IC.refresh} Refresh</>}
+            </button>
             <div className="user-chip" onClick={onLogout} title="Click to sign out">
               <div className="user-av">{auth.user.username.slice(0,2).toUpperCase()}</div>
               <div><div className="user-name">{auth.user.username}</div><div className="user-role">{auth.user.role} · sign out</div></div>
