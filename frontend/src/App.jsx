@@ -1173,7 +1173,7 @@ function AddDeviceModal({onClose, onAdd}) {
   const [community,setCommunity]=useState("public"); const [snmpUser,setSnmpUser]=useState("");
   const [sshUser,setSshUser]=useState("netops"); const [sshPass,setSshPass]=useState(""); const [phase,setPhase]=useState("form");
   const [probeLog,setProbeLog]=useState([]); const [discovered,setDiscovered]=useState(null);
-  const [devName,setDevName]=useState(""); const logRef=useRef(null);
+  const [devName,setDevName]=useState(""); const [devLocation,setDevLocation]=useState(""); const logRef=useRef(null);
   useEffect(()=>{ if(logRef.current)logRef.current.scrollTop=logRef.current.scrollHeight; },[probeLog]);
   const addLog=(m,t="sys")=>setProbeLog(p=>[...p,{m,t}]);
 
@@ -1191,8 +1191,13 @@ function AddDeviceModal({onClose, onAdd}) {
           addLog(`[✓] sysDescr: "${fp.sysdescr||fp.os||""}"`,"info");
           addLog(`[✓] Vendor: ${fp.vendor}  Model: ${fp.model||"(unknown)"}`,"ok");
           addLog(`[✓] OS: ${fp.os||"(unknown)"}`,"ok");
-          const name=`${(fp.vendor||"device").toLowerCase()}-${(ip.split(".").pop()||"00").padStart(2,"0")}`;
-          setDevName(name); setDiscovered({...fp,ip,name,community}); setPhase("discovered");
+          if (fp.hostname) addLog(`[✓] sysName: ${fp.hostname}`,"ok");
+          if (fp.location) addLog(`[✓] sysLocation: ${fp.location}`,"ok");
+          // Prefer the device's own sysName; fall back to a vendor-ip name.
+          const name = fp.hostname || `${(fp.vendor||"device").toLowerCase()}-${(ip.split(".").pop()||"00").padStart(2,"0")}`;
+          setDevName(name); setDevLocation(fp.location || "");
+          setDiscovered({...fp, ip, name, location: fp.location || "", community});
+          setPhase("discovered");
         })
         .catch(e => { addLog(`[✗] Probe failed: ${e.message}`,"err"); setPhase("error"); });
       return;
@@ -1218,7 +1223,7 @@ function AddDeviceModal({onClose, onAdd}) {
     const base={ id:Date.now(), name:devName||d.name, ip:d.ip, vendor:d.vendor, model:d.model, os:d.os,
       type:d.device_type||d.type||"switch", platform:d.platform,
       protocol:authMode.startsWith("snmp")?"SNMP":"SSH", status:"up",
-      uptime:"0d 0h", location:"Unknown", sshPort:22, hostname:devName||d.name,
+      uptime:"0d 0h", location:devLocation||d.location||"Unknown", sshPort:22, hostname:devName||d.name,
       snmpCommunity:authMode.startsWith("snmp")?community:"public", ntpServers:[],
       bgpPeers:[], ospfNets:[], staticRoutes:[], aclDefs:[] };
     if (MOCK_MODE) {
@@ -1272,6 +1277,8 @@ function AddDeviceModal({onClose, onAdd}) {
             </div>
             <label className="flabel">Device name (editable)</label>
             <input className="finput" value={devName} onChange={e=>setDevName(e.target.value)}/>
+            <label className="flabel">Location (editable)</label>
+            <input className="finput" value={devLocation} onChange={e=>setDevLocation(e.target.value)} placeholder={discovered.location ? "" : "e.g. DC1-Rack-A3 (not reported by device)"}/>
           </>}
         </div>
         <div className="modal-footer">

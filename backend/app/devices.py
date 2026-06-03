@@ -192,33 +192,51 @@ def _real_probe(ip, auth, snmp_community, ssh_username, ssh_password):
     community = snmp_community or settings.default_snmp_community
     descr = _snmp_sysdescr(ip, community)
     if descr:
-        return _classify(descr, ip)
+        fp = _classify(descr, ip)
+        # Pull operator-set metadata so the form can pre-fill instead of "Unknown".
+        sysname = _snmp_get(ip, community, "1.3.6.1.2.1.1.5.0")      # sysName
+        syslocation = _snmp_get(ip, community, "1.3.6.1.2.1.1.6.0")  # sysLocation
+        if sysname:
+            fp["hostname"] = sysname
+        if syslocation:
+            fp["location"] = syslocation
+        return fp
     if not user:
         return {"reachable": False, "error": "SNMP returned nothing and no SSH username configured."}
     return _ssh_probe(ip, 22, user, pw)
 
 
-def _snmp_sysdescr(ip, community, version="2c"):
-    """Fetch sysDescr.0 via the net-snmp `snmpget` binary.
+def _snmp_get(ip, community, oid, version="2c"):
+    """Fetch a single SNMP OID value via the net-snmp `snmpget` binary.
 
     We shell out to `snmpget` rather than use pysnmp's HLAPI: pysnmp removed the
     synchronous getCmd in 6.2 and its API has churned repeatedly across 6.x/7.x,
     so binding discovery to it is fragile. The net-snmp CLI is stable and present
-    in the image (see backend/Dockerfile). Returns the sysDescr string or None.
+    in the image (see backend/Dockerfile). Returns the value string or None.
     """
     import subprocess
     try:
         # -Ovq: value only, no type prefix, no quotes; -t/-r: timeout/retries
         out = subprocess.run(
             ["snmpget", "-v", version, "-c", community, "-Ovq", "-t", "2", "-r", "1",
-             f"{ip}:161", "1.3.6.1.2.1.1.1.0"],
+             f"{ip}:161", oid],
             capture_output=True, text=True, timeout=10,
         )
         if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip().strip('"')
+            val = out.stdout.strip().strip('"')
+            # snmpget returns these literals when an OID has no value
+            if val in ("", "No Such Object available on this agent at this OID",
+                       "No Such Instance currently exists at this OID"):
+                return None
+            return val
         return None
     except Exception:  # noqa: BLE001 — binary missing, timeout, etc.
         return None
+
+
+def _snmp_sysdescr(ip, community, version="2c"):
+    """Fetch sysDescr.0 (1.3.6.1.2.1.1.1.0)."""
+    return _snmp_get(ip, community, "1.3.6.1.2.1.1.1.0", version)
 
 
 def _classify(sysdescr, ip):
