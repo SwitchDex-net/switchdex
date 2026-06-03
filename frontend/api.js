@@ -60,7 +60,7 @@ async function req(path, { method = "GET", body, form } = {}) {
 
 // ── auth ──
 export async function login(username, password) {
-  const data = await req("/auth/login", { form: { username, password } });
+  const data = await req("/auth/login", { method: "POST", form: { username, password } });
   setToken(data.access_token);
   return data;                          // { access_token, user, must_change_pw }
 }

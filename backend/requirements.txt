@@ -3,6 +3,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.1
+python-multipart==0.0.20   # required by FastAPI to parse the login form (OAuth2 password flow)
 
 # ── Database ──
 sqlalchemy[asyncio]==2.0.36
