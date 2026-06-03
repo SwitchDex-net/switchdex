@@ -1683,6 +1683,7 @@ function AppInner({auth, onLogout}) {
 
 
   // Real mode: load inventory from the backend on mount.
+  const [refreshTick, setRefreshTick] = useState(0);
   useEffect(() => {
     if (MOCK_MODE) return;
     let alive = true;
@@ -1690,7 +1691,7 @@ function AppInner({auth, onLogout}) {
       .then(ds => { if (alive) { setDevices(ds.map(normalizeDevice)); setLoading(false); } })
       .catch(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, []);
+  }, [refreshTick]);
 
   const sel = devices.find(d=>d.id===selId);
 
@@ -1704,7 +1705,7 @@ function AppInner({auth, onLogout}) {
       .then(s => { if (alive) setLiveSummary(s); })
       .catch(() => {});
     return () => { alive = false; };
-  }, [selId]);
+  }, [selId, refreshTick]);
   // merged view: prefer freshly-sampled values, fall back to the device row
   const liveCpu = liveSummary && liveSummary.cpu != null ? Math.round(liveSummary.cpu) : (sel?.cpu ?? 0);
   const liveMem = liveSummary && liveSummary.mem != null ? Math.round(liveSummary.mem) : (sel?.mem ?? 0);
@@ -1807,7 +1808,7 @@ function AppInner({auth, onLogout}) {
           <div className="topbar">
             <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Compliance</> : view==="telemetry" ? <>Telemetry</> : <>Device <span>Inventory</span></>}</span>
             {view==="inventory" && <button className="tb-btn" onClick={()=>setShowAdd(true)}>{IC.plus} Add device</button>}
-            <button className="tb-btn">{IC.refresh} Refresh</button>
+            <button className="tb-btn" onClick={()=>setRefreshTick(t=>t+1)} title="Reload device data and metrics">{IC.refresh} Refresh</button>
             <div className="user-chip" onClick={onLogout} title="Click to sign out">
               <div className="user-av">{auth.user.username.slice(0,2).toUpperCase()}</div>
               <div><div className="user-name">{auth.user.username}</div><div className="user-role">{auth.user.role} · sign out</div></div>
@@ -2120,8 +2121,8 @@ function TelemetryView({ devices, initialDeviceId }) {
   useEffect(() => {
     if (!devId) return;
     if (!MOCK_MODE) {
-      Promise.all([api.metric(devId, "cpu", range), api.metric(devId, "mem", range), api.metricInterfaces(devId, range)])
-        .then(([cpu, mem, ifs]) => setData({ cpu: cpu.points, mem: mem.points, ifs: ifs.interfaces }))
+      Promise.all([api.metric(devId, "cpu", range), api.metric(devId, "mem", range)])
+        .then(([cpu, mem]) => setData({ cpu: cpu.points, mem: mem.points, ifs: {} }))
         .catch(() => setData(null));
       return;
     }
@@ -2164,18 +2165,6 @@ function TelemetryView({ devices, initialDeviceId }) {
           <div className="tel-card">
             <div className="tel-card-hdr"><span className="tel-card-title">Memory</span><span className="tel-card-cur" style={{ color: cur(data.mem) > 85 ? "#f85149" : "#3fb950" }}>{cur(data.mem)}%</span></div>
             <LineChart series={[{ points: data.mem }]} color="#bc8cff" max={100} />
-          </div>
-          <div className="tel-card wide">
-            <div className="tel-card-hdr"><span className="tel-card-title">Interface throughput</span><span className="tel-card-cur" style={{ color: "#8b949e" }}>Mbps</span></div>
-            <LineChart height={150} max={null} fill={false} unit=" Mbps"
-              series={Object.entries(data.ifs).flatMap(([nm, s], i) => [
-                { points: s.rx, name: nm + " rx", color: ["#58a6ff", "#3fb950", "#e3b341", "#bc8cff"][i % 4] },
-              ])} />
-            <div className="tel-legend">
-              {Object.keys(data.ifs).map((nm, i) => (
-                <div className="tel-leg" key={nm}><span className="tel-leg-line" style={{ background: ["#58a6ff", "#3fb950", "#e3b341", "#bc8cff"][i % 4] }} />{nm} rx {fmtRate(cur(data.ifs[nm].rx))}</div>
-              ))}
-            </div>
           </div>
         </div>
       )}
