@@ -32,6 +32,8 @@ async function _req(path, { method = "GET", body, form } = {}) {
 const api = {
   login: async (u, p) => { const d = await _req("/auth/login", { method: "POST", form: { username: u, password: p } }); _setTok(d.access_token); return d; },
   logout: () => _setTok(null),
+  me: () => _req("/auth/me"),
+  changePassword: (oldPw, newPw) => _req("/auth/change-password", { method: "POST", body: { old_password: oldPw, new_password: newPw } }),
   listDevices: () => _req("/devices"),
   probeDevice: (b) => _req("/devices/probe", { method: "POST", body: b }),
   addDevice: (d) => _req("/devices", { method: "POST", body: d }),

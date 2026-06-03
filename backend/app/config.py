@@ -7,7 +7,8 @@ class Settings(BaseSettings):
     config_repo: str = "/data/config-repo"
 
     # "sim" = simulated devices; "real" = live NAPALM/Netmiko/asyncssh
-    device_backend: str = "sim"
+    device_backend: str = "real"      # "real" talks to live devices; "sim" for evaluation
+    seed_demo_devices: bool = False    # set true to populate 4 fake devices for a demo
 
     default_ssh_username: str = "netops"
     default_ssh_password: str = ""

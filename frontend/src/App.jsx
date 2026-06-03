@@ -8,7 +8,10 @@ import React, { useState, useEffect, useRef } from "react";
  * proxies it); override with window.SWITCHDEX_API = "https://nms.example.com".
  * The standalone version of this client ships as src/api.js.
  * ════════════════════════════════════════════════════════════════════════ */
-const MOCK_MODE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_MOCK_MODE === "true");
+// Production build: no demo mode. MOCK_MODE is permanently false, so the
+// bundler eliminates every `if (MOCK_MODE)` branch and the demo helpers as
+// dead code. The app always talks to the real backend at /api.
+const MOCK_MODE = false;
 
 const _API_BASE = (typeof window !== "undefined" && window.SWITCHDEX_API) || "";
 let _token = null;

@@ -50,9 +50,10 @@ async def lifespan(app: FastAPI):
             print("   (you will be required to change it on first login)", flush=True)
             print("=" * 64, flush=True)
 
-        # ── seed demo devices ──
+        # ── seed demo devices (off by default; SEED_DEMO_DEVICES=true for eval) ──
+        from .config import settings as _cfg
         count = (await s.execute(select(func.count(Device.id)))).scalar()
-        if count == 0:
+        if count == 0 and getattr(_cfg, "seed_demo_devices", False):
             for d in SEED:
                 s.add(Device(hostname=d["name"], **d))
             await s.commit()

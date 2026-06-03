@@ -174,6 +174,7 @@ echo -e " ${BL}Admin:${CL}  the bootstrap password is printed in the backend log
 echo -e "         ${YW}pct exec ${CTID} -- docker compose -f /opt/switchdex/docker-compose.yml logs backend | grep -A4 'bootstrap admin'${CL}"
 echo
 echo " Accept the self-signed certificate, then change the admin password on first login."
-echo " To manage real devices, set DEVICE_BACKEND=real in /opt/switchdex/.env and"
-echo " run: pct exec ${CTID} -- bash -c 'cd /opt/switchdex && docker compose up -d'"
+echo " Runs in real-device mode by default — add your devices in the UI."
+echo " (For a hardware-free demo: set SEED_DEMO_DEVICES=true and DEVICE_BACKEND=sim in"
+echo "  /opt/switchdex/.env, then: pct exec ${CTID} -- bash -c 'cd /opt/switchdex && docker compose up -d')"
 echo
