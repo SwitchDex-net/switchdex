@@ -1708,7 +1708,7 @@ function AppInner({auth, onLogout}) {
   // merged view: prefer freshly-sampled values, fall back to the device row
   const liveCpu = liveSummary && liveSummary.cpu != null ? Math.round(liveSummary.cpu) : (sel?.cpu ?? 0);
   const liveMem = liveSummary && liveSummary.mem != null ? Math.round(liveSummary.mem) : (sel?.mem ?? 0);
-  const liveUptime = (sel?.uptime && sel.uptime !== "—") ? sel.uptime : (liveSummary?.uptime || "—");
+  const liveUptime = (liveSummary?.uptime) || ((sel?.uptime && sel.uptime !== "—") ? sel.uptime : "—");
 
   // Real mode: pull live interfaces from the device when its detail opens.
   useEffect(() => {
@@ -2005,6 +2005,13 @@ function mockSeries(seed, points, base, amp, period, floor=0, ceil=100) {
 const RANGE_MS = { "1h": 3600e3, "6h": 6 * 3600e3, "24h": 24 * 3600e3, "7d": 7 * 24 * 3600e3, "30d": 30 * 24 * 3600e3 };
 
 // Pure-SVG line chart (no dependency). points: [{t, v}], scales to width/height.
+function fmtTs(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch { return iso; }
+}
+
 function LineChart({ series, height = 130, color = "#58a6ff", fill = true, unit = "%", max = null, showAxis = true }) {
   const W = 100, H = 100; // viewBox units; svg scales via width/height
   const all = series.flatMap(s => s.points.map(p => p.v));
@@ -2012,25 +2019,80 @@ function LineChart({ series, height = 130, color = "#58a6ff", fill = true, unit 
   const n = Math.max(...series.map(s => s.points.length), 1);
   const xOf = (i, len) => (len <= 1 ? 0 : (i / (len - 1)) * W);
   const yOf = (v) => H - (v / ymax) * H;
+
+  const wrapRef = useRef(null);
+  const [hover, setHover] = useState(null); // { frac, idx, pxX }
+
+  // longest series drives the x-axis / hit-testing
+  const primary = series.reduce((a, b) => (b.points.length > a.points.length ? b : a), series[0] || { points: [] });
+
+  function onMove(e) {
+    const el = wrapRef.current; if (!el || !primary.points.length) return;
+    const rect = el.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const idx = Math.round(frac * (primary.points.length - 1));
+    setHover({ idx, pxX: (idx / Math.max(1, primary.points.length - 1)) * rect.width, w: rect.width });
+  }
+  function onLeave() { setHover(null); }
+
+  const hp = hover && primary.points[hover.idx];
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height, display: "block" }}>
-      {showAxis && [0.25, 0.5, 0.75].map(g => (
-        <line key={g} x1="0" y1={H * g} x2={W} y2={H * g} stroke="#21262d" strokeWidth="0.4" />
-      ))}
-      {series.map((s, si) => {
-        if (!s.points.length) return null;
-        const col = s.color || color;
-        const pts = s.points.map((p, i) => `${xOf(i, s.points.length)},${yOf(p.v)}`).join(" ");
-        const area = `0,${H} ` + pts + ` ${xOf(s.points.length - 1, s.points.length)},${H}`;
-        return (
-          <g key={si}>
-            {fill && series.length === 1 && <polygon points={area} fill={col} opacity="0.12" />}
-            <polyline points={pts} fill="none" stroke={col} strokeWidth="1.2" vectorEffect="non-scaling-stroke"
-              strokeLinejoin="round" strokeLinecap="round" />
+    <div ref={wrapRef} style={{ position: "relative", width: "100%", height }}
+         onMouseMove={onMove} onMouseLeave={onLeave}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height, display: "block" }}>
+        {showAxis && [0.25, 0.5, 0.75].map(g => (
+          <line key={g} x1="0" y1={H * g} x2={W} y2={H * g} stroke="#21262d" strokeWidth="0.4" />
+        ))}
+        {series.map((s, si) => {
+          if (!s.points.length) return null;
+          const col = s.color || color;
+          const pts = s.points.map((p, i) => `${xOf(i, s.points.length)},${yOf(p.v)}`).join(" ");
+          const area = `0,${H} ` + pts + ` ${xOf(s.points.length - 1, s.points.length)},${H}`;
+          return (
+            <g key={si}>
+              {fill && series.length === 1 && <polygon points={area} fill={col} opacity="0.12" />}
+              <polyline points={pts} fill="none" stroke={col} strokeWidth="1.2" vectorEffect="non-scaling-stroke"
+                strokeLinejoin="round" strokeLinecap="round" />
+            </g>
+          );
+        })}
+        {/* hover guide line + dots, in viewBox units */}
+        {hover && hp && (
+          <g>
+            <line x1={xOf(hover.idx, primary.points.length)} y1="0"
+                  x2={xOf(hover.idx, primary.points.length)} y2={H}
+                  stroke="#8b949e" strokeWidth="0.5" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+            {series.map((s, si) => {
+              const p = s.points[hover.idx]; if (!p) return null;
+              return <circle key={si} cx={xOf(hover.idx, primary.points.length)} cy={yOf(p.v)}
+                             r="1.6" fill={s.color || color} stroke="#0d1117" strokeWidth="0.6"
+                             vectorEffect="non-scaling-stroke" />;
+            })}
           </g>
-        );
-      })}
-    </svg>
+        )}
+      </svg>
+      {/* tooltip */}
+      {hover && hp && (
+        <div style={{
+          position: "absolute", top: 4,
+          left: Math.min(Math.max(hover.pxX + 8, 4), (hover.w || 0) - 150),
+          background: "#161b22", border: "1px solid #30363d", borderRadius: 6,
+          padding: "5px 8px", fontSize: 11, color: "#e6edf3", pointerEvents: "none",
+          fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap", zIndex: 5,
+          boxShadow: "0 2px 8px rgba(0,0,0,.4)"
+        }}>
+          <div style={{ color: "#8b949e", marginBottom: 2 }}>{fmtTs(hp.t)}</div>
+          {series.map((s, si) => {
+            const p = s.points[hover.idx]; if (!p) return null;
+            return <div key={si} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: s.color || color, display: "inline-block" }} />
+              {s.name ? s.name + ": " : ""}{p.v}{unit}
+            </div>;
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2105,9 +2167,9 @@ function TelemetryView({ devices, initialDeviceId }) {
           </div>
           <div className="tel-card wide">
             <div className="tel-card-hdr"><span className="tel-card-title">Interface throughput</span><span className="tel-card-cur" style={{ color: "#8b949e" }}>Mbps</span></div>
-            <LineChart height={150} max={null} fill={false}
+            <LineChart height={150} max={null} fill={false} unit=" Mbps"
               series={Object.entries(data.ifs).flatMap(([nm, s], i) => [
-                { points: s.rx, color: ["#58a6ff", "#3fb950", "#e3b341", "#bc8cff"][i % 4] },
+                { points: s.rx, name: nm + " rx", color: ["#58a6ff", "#3fb950", "#e3b341", "#bc8cff"][i % 4] },
               ])} />
             <div className="tel-legend">
               {Object.keys(data.ifs).map((nm, i) => (

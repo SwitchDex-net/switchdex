@@ -47,10 +47,12 @@ async def collect_once(scope="open"):
         devices = (await s.execute(q)).scalars().all()
         rows = []
         for d in devices:
-            cpu, mem, reachable, ifrates = await _sample_device(d)
+            cpu, mem, reachable, ifrates, uptime_secs = await _sample_device(d)
             rows.append(MetricSample(device_id=d.id, ts=now, metric="cpu", value=cpu))
             rows.append(MetricSample(device_id=d.id, ts=now, metric="mem", value=mem))
             rows.append(MetricSample(device_id=d.id, ts=now, metric="reachable", value=reachable))
+            if uptime_secs:
+                rows.append(MetricSample(device_id=d.id, ts=now, metric="uptime", value=uptime_secs))
             for ifname, (rx, tx) in ifrates.items():
                 rows.append(MetricSample(device_id=d.id, ts=now, metric="if_rx", label=ifname, value=rx))
                 rows.append(MetricSample(device_id=d.id, ts=now, metric="if_tx", label=ifname, value=tx))
@@ -73,9 +75,10 @@ async def _sample_device(dev):
                 ports = {f"port{p.get('idx')}": (float(p.get("rx", 0) or 0) / 1e6,
                                                  float(p.get("tx", 0) or 0) / 1e6)
                          for p in m.get("ports", [])[:8]}
-                return float(m.get("cpu", 0)), float(m.get("mem", 0)), 1.0, ports
+                return (float(m.get("cpu", 0)), float(m.get("mem", 0)), 1.0, ports,
+                        float(m.get("uptime", 0) or 0))
             except Exception:  # noqa: BLE001
-                return 0, 0, 0.0, {}
+                return 0, 0, 0.0, {}, 0.0
         # open-protocol devices: poll health over SNMP (CPU/mem/uptime)
         community = dev.snmp_community or settings.default_snmp_community
         if community and dev.ip:
@@ -83,21 +86,12 @@ async def _sample_device(dev):
                 from . import devices as drv
                 m = await asyncio.to_thread(drv.snmp_metrics, dev.ip, community)
                 reachable = 1.0 if m.get("reachable") else (1.0 if dev.status == "up" else 0.0)
-                # persist uptime back onto the device row so the UI shows it
-                if m.get("uptime") and m["uptime"] != "—":
-                    try:
-                        async with SessionLocal() as s2:
-                            d2 = await s2.get(Device, dev.id)
-                            if d2:
-                                d2.uptime = m["uptime"]
-                                await s2.commit()
-                    except Exception:  # noqa: BLE001
-                        pass
-                return float(m.get("cpu", 0)), float(m.get("mem", 0)), reachable, {}
+                return (float(m.get("cpu", 0)), float(m.get("mem", 0)), reachable,
+                        {}, float(m.get("uptime_secs", 0) or 0))
             except Exception:  # noqa: BLE001
-                return 0, 0, (1.0 if dev.status == "up" else 0.0), {}
-        return float(getattr(dev, "cpu", 0) or 0), float(getattr(dev, "mem", 0) or 0), \
-            (1.0 if dev.status == "up" else 0.0), {}
+                return 0, 0, (1.0 if dev.status == "up" else 0.0), {}, 0.0
+        return (float(getattr(dev, "cpu", 0) or 0), float(getattr(dev, "mem", 0) or 0),
+                (1.0 if dev.status == "up" else 0.0), {}, 0.0)
 
     # ── simulated: smooth, believable series driven by time + device id ──
     t = dt.datetime.utcnow().timestamp() / 600.0
@@ -117,7 +111,7 @@ async def _sample_device(dev):
         rx = max(0, 200 + 150 * math.sin(t + i + seed) + random.uniform(-40, 40))
         tx = max(0, 120 + 90 * math.sin(t / 1.5 + i + seed) + random.uniform(-30, 30))
         ifaces[nm] = (round(rx, 1), round(tx, 1))
-    return round(cpu, 1), round(mem, 1), reachable, ifaces
+    return round(cpu, 1), round(mem, 1), reachable, ifaces, float(86400 * (3 + seed % 60))
 
 
 # ───────────────────────── maintenance (downsample + prune) ────────────
@@ -198,7 +192,7 @@ async def query_interfaces(device_id: int, rng: str = "24h"):
 
 
 async def latest_summary(device_id: int):
-    """Most recent cpu/mem for quick display."""
+    """Most recent cpu/mem/uptime for quick display."""
     async with SessionLocal() as s:
         out = {}
         for m in ("cpu", "mem"):
@@ -208,4 +202,16 @@ async def latest_summary(device_id: int):
                 .order_by(MetricSample.ts.desc()).limit(1)
             )).scalar_one_or_none()
             out[m] = round(row, 1) if row is not None else None
+        # uptime stored as seconds; format as "Nd Nh" for display
+        up = (await s.execute(
+            select(MetricSample.value).where(MetricSample.device_id == device_id,
+                                             MetricSample.metric == "uptime")
+            .order_by(MetricSample.ts.desc()).limit(1)
+        )).scalar_one_or_none()
+        if up is not None and up > 0:
+            secs = int(up)
+            out["uptime_secs"] = secs
+            out["uptime"] = f"{secs // 86400}d {(secs % 86400) // 3600}h"
+        else:
+            out["uptime"] = None
     return out
