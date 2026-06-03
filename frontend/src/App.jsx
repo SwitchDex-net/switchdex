@@ -890,7 +890,12 @@ function isFiber(spd){ return ["10G","25G","40G","100G"].includes(spd); }
 function portClass(i){ if(i.shutdown) return "admin"; if(i.status==="up") return "up"; return "down"; }
 
 function SwitchFaceplate({device, selIface, onSelect}) {
-  const entries = Object.entries(device.interfaces);
+  const entries = Object.entries(device.interfaces || {});
+  if (entries.length === 0) {
+    return <div className="faceplate" style={{padding:"24px",textAlign:"center",color:"#6e7681",fontSize:13}}>
+      No interface data yet for {device.name}.<br/>Interface enumeration runs on the next poll, or trigger a backup to pull live config.
+    </div>;
+  }
   const mgmt = entries.filter(([n])=>isMgmt(n));
   const data = entries.filter(([n])=>!isMgmt(n));
   const top = data.filter((_,i)=>i%2===0);
@@ -1462,14 +1467,41 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
 function AppInner({auth, onLogout}) {
   const [devices, setDevices] = useState(MOCK_MODE ? INIT_DEVICES : []);
   const [loading, setLoading] = useState(!MOCK_MODE);
-  const [selId, setSelId] = useState(null);
+  const VIEWS = ["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry"];
+  // Parse the URL hash into { view, selId }. Forms: #/inventory, #/devices/5
+  function parseHash(){
+    const h = (window.location.hash || "").replace(/^#\/?/, "");
+    const [seg, id] = h.split("/");
+    if (seg === "devices") return { view: "inventory", selId: id ? Number(id) : null };
+    if (VIEWS.includes(seg)) return { view: seg, selId: null };
+    return { view: "inventory", selId: null };
+  }
+  const _init = parseHash();
+  const [selId, setSelId] = useState(_init.selId);
   const [tab, setTab] = useState("detail");
   const [selIface, setSelIface] = useState(null);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
-  const [view, setView] = useState("inventory");   // inventory | configmgmt
+  const [view, setView] = useState(_init.view);
   const [archive, setArchive] = useState(()=>MOCK_MODE ? seedArchive(INIT_DEVICES) : {});
+
+  // URL → state: respond to back/forward and manual hash edits.
+  useEffect(() => {
+    const onNav = () => { const p = parseHash(); setView(p.view); setSelId(p.selId); };
+    window.addEventListener("hashchange", onNav);
+    window.addEventListener("popstate", onNav);
+    return () => { window.removeEventListener("hashchange", onNav); window.removeEventListener("popstate", onNav); };
+  }, []);
+
+  // state → URL: keep the address bar in sync (so back/forward + refresh work).
+  useEffect(() => {
+    const want = (view === "inventory" && selId != null) ? `#/devices/${selId}` : `#/${view}`;
+    if (window.location.hash !== want) {
+      window.history.pushState(null, "", want);
+    }
+  }, [view, selId]);
+
 
   // Real mode: load inventory from the backend on mount.
   useEffect(() => {
@@ -2660,6 +2692,27 @@ function ForcePasswordChange({ auth, onDone, onLogout }) {
   );
 }
 
+/* ───────────────────────── Error boundary ─────────────────────────── */
+class ErrorBoundary extends React.Component {
+  constructor(p){ super(p); this.state={err:null}; }
+  static getDerivedStateFromError(err){ return {err}; }
+  componentDidCatch(err,info){ console.error("SwitchDex render error:", err, info); }
+  render(){
+    if (this.state.err) {
+      return (
+        <div style={{padding:"40px",maxWidth:560,margin:"40px auto",fontFamily:"IBM Plex Sans,sans-serif",color:"#e6edf3",background:"#161b22",border:"1px solid #30363d",borderRadius:12}}>
+          <div style={{fontSize:16,fontWeight:600,marginBottom:8}}>Something went wrong rendering this view.</div>
+          <div style={{fontSize:13,color:"#8b949e",marginBottom:14}}>The rest of SwitchDex is fine — this panel hit an error. You can reload, or go back to the inventory.</div>
+          <pre style={{fontSize:11,color:"#f85149",background:"#010409",padding:"10px 12px",borderRadius:6,overflow:"auto",marginBottom:14}}>{String(this.state.err && this.state.err.message || this.state.err)}</pre>
+          <button onClick={()=>{ this.setState({err:null}); window.location.reload(); }}
+            style={{padding:"8px 14px",borderRadius:6,border:"1px solid #2ea043",background:"#238636",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"}}>Reload</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 /* ───────────────────────── Auth gate / root ───────────────────────── */
 export default function App() {
   // Token persists in localStorage (real mode); session state in React.
@@ -2676,5 +2729,5 @@ export default function App() {
 
   if (!auth) return <LoginScreen onLogin={setAuth} />;
   if (auth.mustChange) return <ForcePasswordChange auth={auth} onLogout={logout} onDone={()=>setAuth(a=>({...a, mustChange:false}))} />;
-  return <AppInner auth={auth} onLogout={logout} />;
+  return <ErrorBoundary><AppInner auth={auth} onLogout={logout} /></ErrorBoundary>;
 }
