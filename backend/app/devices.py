@@ -87,18 +87,26 @@ def _real_probe(ip, snmp_community, ssh_username, ssh_password):
         return {"reachable": False, "error": str(e)}
 
 
-def _snmp_sysdescr(ip, community):
+def _snmp_sysdescr(ip, community, version="2c"):
+    """Fetch sysDescr.0 via the net-snmp `snmpget` binary.
+
+    We shell out to `snmpget` rather than use pysnmp's HLAPI: pysnmp removed the
+    synchronous getCmd in 6.2 and its API has churned repeatedly across 6.x/7.x,
+    so binding discovery to it is fragile. The net-snmp CLI is stable and present
+    in the image (see backend/Dockerfile). Returns the sysDescr string or None.
+    """
+    import subprocess
     try:
-        from pysnmp.hlapi import (getCmd, SnmpEngine, CommunityData, UdpTransportTarget,
-                                  ContextData, ObjectType, ObjectIdentity)
-        it = getCmd(SnmpEngine(), CommunityData(community),
-                    UdpTransportTarget((ip, 161), timeout=2, retries=1),
-                    ContextData(), ObjectType(ObjectIdentity("1.3.6.1.2.1.1.1.0")))
-        errInd, errStat, _, binds = next(it)
-        if errInd or errStat:
-            return None
-        return str(binds[0][1])
-    except Exception:  # noqa: BLE001
+        # -Ovq: value only, no type prefix, no quotes; -t/-r: timeout/retries
+        out = subprocess.run(
+            ["snmpget", "-v", version, "-c", community, "-Ovq", "-t", "2", "-r", "1",
+             f"{ip}:161", "1.3.6.1.2.1.1.1.0"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().strip('"')
+        return None
+    except Exception:  # noqa: BLE001 — binary missing, timeout, etc.
         return None
 
 

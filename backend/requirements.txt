@@ -22,7 +22,6 @@ nornir==3.5.0          # inventory + parallel task orchestration
 nornir-napalm==0.5.0
 nornir-netmiko==1.0.1
 asyncssh==2.18.0       # async interactive shell for the WebSocket SSH proxy
-pysnmp==6.2.6          # SNMP discovery probe
 
 # ── Auth ──
 bcrypt==4.2.1          # local password hashing

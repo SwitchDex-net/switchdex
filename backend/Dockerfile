@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 
-# System deps: git for the config archive, build tools for netmiko/cryptography
+# System deps: git for the config archive, build tools for netmiko/cryptography,
+# snmp (net-snmp CLI) for the device discovery probe.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git openssh-client gcc libssl-dev \
+    git openssh-client gcc libssl-dev snmp \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

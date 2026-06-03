@@ -30,11 +30,9 @@ Device credentials live on the server, never in the browser.
 - **Compliance** — policy checks (required/forbidden config) plus per-device golden-baseline drift
 - **Telemetry** — time-series CPU, memory, reachability, and per-interface throughput, with inline sparklines and a full charts view
 - **Closed ecosystems** — read-only metrics from UniFi and Omada controllers, clearly marked
-- **Auth** — local accounts + optional LDAP / Active Directory, with role-based access
+- **Auth** — local accounts + optional LDAP / Active Directory, role-based access, and a forced password change for the break-glass admin on first login
 
 ## Quick start
-
-The fastest way to try it (simulation mode — no hardware needed):
 
 ```bash
 git clone https://github.com/switchdex-net/switchdex.git
@@ -43,12 +41,18 @@ cp .env.example .env        # or let install.sh generate secrets
 docker compose up -d --build
 ```
 
-Then browse to `https://localhost` (accept the self-signed cert). Find the
-bootstrap admin password with:
+Then browse to `https://localhost` (accept the self-signed cert). Retrieve the
+one-time bootstrap admin password from the logs, then log in — you'll be required
+to set your own password on first login:
 
 ```bash
 docker compose logs backend | grep -A4 "bootstrap admin"
 ```
+
+A fresh install starts **empty and in real-device mode** — add your own devices
+(SSH/SNMP). To explore the product with no hardware, build with the demo enabled:
+set `DEVICE_BACKEND=sim` and `SEED_DEMO_DEVICES=true` in `.env` before starting,
+which populates a few simulated devices with live-looking data.
 
 ## Deployment options
 
@@ -59,15 +63,16 @@ docker compose logs backend | grep -A4 "bootstrap admin"
 | **Bare-metal installer** | An existing Linux VM | `install.sh` |
 | **Docker Compose** | Development | this page |
 
-To manage real devices instead of the simulated demo, set `DEVICE_BACKEND=real`
-in `.env` and add SSH/SNMP credentials.
+A fresh install runs in real-device mode and starts with an empty inventory; add
+your devices in the UI with SSH or SNMP credentials. For a hardware-free demo,
+set `DEVICE_BACKEND=sim` and `SEED_DEMO_DEVICES=true` in `.env`.
 
 ## Repository layout
 
 ```
 switchdex/
 ├── backend/          FastAPI app — API, device drivers, scheduler, engines
-├── frontend/         React single-file UI + standalone API client
+├── frontend/         React UI (Vite) + standalone API client; built into the image
 ├── appliance/        Packer pipeline that builds the OVA / qcow2 image
 ├── proxmox/          Proxmox LXC install + update scripts
 ├── docs/             Build, deploy, and backend architecture guides
@@ -82,9 +87,12 @@ in [frontend/INTEGRATION.md](frontend/INTEGRATION.md).
 
 ## Status
 
-SwitchDex runs in **simulation mode** out of the box so you can explore the whole
-product with no hardware. Real-device support uses NAPALM / Netmiko / asyncssh
-(open protocols) and the UniFi / Omada controller APIs (read-only).
+SwitchDex runs in **real-device mode by default** — a fresh install is an empty,
+production-ready inventory you populate with your own gear. Real-device support
+uses NAPALM / Netmiko / asyncssh and SNMP for open protocols, plus the UniFi /
+Omada controller APIs (read-only). A built-in simulation mode
+(`DEVICE_BACKEND=sim`, `SEED_DEMO_DEVICES=true`) lets you explore the entire
+product with no hardware.
 
 ## Contributing
 
