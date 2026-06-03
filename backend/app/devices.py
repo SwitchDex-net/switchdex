@@ -154,38 +154,59 @@ def snmp_metrics(ip, community, version="2c"):
     0 rather than failing the whole poll."""
     out = {"cpu": 0.0, "mem": 0.0, "uptime": "—", "uptime_secs": 0, "reachable": False}
 
-    # ── uptime: sysUpTime.0 is universal, value is in hundredths of a second ──
+    # ── uptime: sysUpTime.0 is universal. With -Ovq, net-snmp may render it as
+    # "130:5:51:32.34" (D:H:M:S.cc), "(ticks) 0:02:03" or a bare tick count. ──
     upt = _snmp_get(ip, community, "1.3.6.1.2.1.1.3.0", version)
     if upt is not None:
         out["reachable"] = True
+        secs = 0
+        s = str(upt).strip()
         try:
-            # snmpget may return "12345" or "Timeticks: (12345) 0:02:03.45"
             import re as _re
-            m = _re.search(r"\((\d+)\)", str(upt)) or _re.search(r"(\d+)", str(upt))
-            ticks = int(m.group(1)) if m else 0
-            secs = ticks // 100
-            out["uptime_secs"] = secs
-            days, rem = divmod(secs, 86400)
-            hours = rem // 3600
-            out["uptime"] = f"{days}d {hours}h"
+            paren = _re.search(r"\((\d+)\)", s)          # "(108937700) ..."
+            if paren:
+                secs = int(paren.group(1)) // 100
+            elif ":" in s:                                # "130:5:51:32.34" = D:H:M:S
+                parts = s.split(":")
+                parts[-1] = parts[-1].split(".")[0]       # drop hundredths
+                nums = [int(p) for p in parts]
+                if len(nums) == 4:
+                    d, h, mi, se = nums
+                    secs = d*86400 + h*3600 + mi*60 + se
+                elif len(nums) == 3:
+                    h, mi, se = nums
+                    secs = h*3600 + mi*60 + se
+            elif s.isdigit():                             # bare ticks
+                secs = int(s) // 100
         except Exception:  # noqa: BLE001
-            pass
+            secs = 0
+        out["uptime_secs"] = secs
+        days, rem = divmod(secs, 86400)
+        out["uptime"] = f"{days}d {rem // 3600}h"
 
-    # ── CPU: Cisco cpmCPUTotal5minRev, then 5min, then generic hrProcessorLoad ─
-    cpu = (_snmp_get(ip, community, "1.3.6.1.4.1.9.9.109.1.1.1.1.8.1", version)
-           or _snmp_get(ip, community, "1.3.6.1.4.1.9.9.109.1.1.1.1.5.1", version))
+    # ── CPU: walk cpmCPUTotal5minRev (index varies by platform, e.g. .19), then
+    # cpmCPUTotal5min, then generic hrProcessorLoad. Average across entries. ──
+    def _avg_walk(base):
+        d = _snmp_walk(ip, community, base, version)
+        vals = []
+        for v in d.values():
+            sv = str(v).strip()
+            # snmpwalk -Oqn returns just the value; may be "Gauge32: 2" or "2"
+            sv = sv.split(":")[-1].strip() if ":" in sv else sv
+            try:
+                vals.append(float(sv))
+            except ValueError:
+                continue
+        return (sum(vals) / len(vals)) if vals else None
+
+    cpu = _avg_walk("1.3.6.1.4.1.9.9.109.1.1.1.1.8")      # cpmCPUTotal5minRev
     if cpu is None:
-        # average all processor cores from HOST-RESOURCES-MIB
-        loads = _snmp_walk(ip, community, "1.3.6.1.2.1.25.3.3.1.2", version)
-        vals = [float(v) for v in loads.values() if str(v).strip().replace(".", "").isdigit()]
-        if vals:
-            cpu = sum(vals) / len(vals)
+        cpu = _avg_walk("1.3.6.1.4.1.9.9.109.1.1.1.1.5")  # cpmCPUTotal5min (older)
+    if cpu is None:
+        cpu = _avg_walk("1.3.6.1.2.1.25.3.3.1.2")         # hrProcessorLoad (generic)
     if cpu is not None:
-        try:
-            out["cpu"] = round(float(cpu), 1)
-            out["reachable"] = True
-        except (TypeError, ValueError):
-            pass
+        out["cpu"] = round(cpu, 1)
+        out["reachable"] = True
 
     # ── memory: Cisco ciscoMemoryPool used/free -> %, then hrStorage fallback ──
     used = _snmp_get(ip, community, "1.3.6.1.4.1.9.9.48.1.1.1.5.1", version)

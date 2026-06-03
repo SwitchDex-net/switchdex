@@ -30,11 +30,21 @@ from . import connectors
 
 
 # ───────────────────────── collection ──────────────────────────────────
-async def collect_once():
-    """Sample every device once and persist the datapoints."""
+async def collect_once(scope="open"):
+    """Sample devices once and persist datapoints. `scope` selects which devices:
+      "open"       — directly-managed (SNMP) devices only [default, fast interval]
+      "controller" — controller-managed devices only [slower, API rate-limited]
+      "all"        — every device
+    Splitting the scopes lets open-protocol gear poll fast over SNMP without a
+    fast interval blowing through controller API caps (e.g. Omada's daily limit)."""
     now = dt.datetime.utcnow()
     async with SessionLocal() as s:
-        devices = (await s.execute(select(Device))).scalars().all()
+        q = select(Device)
+        if scope == "open":
+            q = q.where(Device.controller_id.is_(None))
+        elif scope == "controller":
+            q = q.where(Device.controller_id.is_not(None))
+        devices = (await s.execute(q)).scalars().all()
         rows = []
         for d in devices:
             cpu, mem, reachable, ifrates = await _sample_device(d)

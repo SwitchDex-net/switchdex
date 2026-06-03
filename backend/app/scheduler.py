@@ -49,6 +49,11 @@ async def poll_controllers():
     for cid in cids:
         res = await sync_one(cid)
         log.info("controller %s sync: %s", cid, "ok" if res.get("ok") else res.get("error"))
+    # sample controller-managed devices' metrics at this (slower) cadence so we
+    # don't exceed controller API rate limits with the fast SNMP interval
+    if cids:
+        n = await tel.collect_once(scope="controller")
+        log.info("controller-device telemetry sampled (%d rows)", n)
 
 
 async def main():

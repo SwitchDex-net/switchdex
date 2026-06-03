@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # Telemetry: sample interval (s), how long to keep raw samples (days),
     # and how long to keep downsampled hourly data (days).
-    metrics_interval: int = 300
+    metrics_interval: int = 30
     metrics_raw_retention_days: int = 7
     metrics_hourly_retention_days: int = 90
 
