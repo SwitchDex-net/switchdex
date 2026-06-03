@@ -163,7 +163,7 @@ class Alert(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     rule_id: Mapped[int | None] = mapped_column(ForeignKey("alert_rules.id"), nullable=True)
-    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"), nullable=True)
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), nullable=True)
     # de-dup key so a still-true condition doesn't spawn duplicates
     dedup_key: Mapped[str] = mapped_column(String(128), index=True)
     severity: Mapped[str] = mapped_column(String(16), default="warning")
@@ -217,7 +217,7 @@ class DeviceBaseline(Base):
     __tablename__ = "device_baselines"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), unique=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), unique=True)
     version_id: Mapped[int] = mapped_column(ForeignKey("config_versions.id"))
     commit_sha: Mapped[str] = mapped_column(String(64))
     content_hash: Mapped[str] = mapped_column(String(64))
@@ -233,7 +233,7 @@ class MetricSample(Base):
     __tablename__ = "metric_samples"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), index=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     ts: Mapped[dt.datetime] = mapped_column(DateTime, index=True, default=dt.datetime.utcnow)
     metric: Mapped[str] = mapped_column(String(24), index=True)   # cpu|mem|reachable|if_rx|if_tx
     label: Mapped[str] = mapped_column(String(64), default="")    # interface name for per-if metrics

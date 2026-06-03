@@ -4,7 +4,7 @@ import datetime as dt
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, delete as sa_delete
 
 from .db import SessionLocal, Device, ConfigVersion
 from . import devices as drv
@@ -110,7 +110,13 @@ async def delete_device(device_id: int):
     async with SessionLocal() as s:
         dev = await s.get(Device, device_id)
         if not dev:
-            raise HTTPException(404)
+            raise HTTPException(404, "Device not found")
+        # Remove dependent rows first. The models declare ondelete=CASCADE, but
+        # an already-created database won't have that constraint, so we delete
+        # explicitly to make this work on existing installs too.
+        from .db import MetricSample, DeviceBaseline, Alert, ConfigVersion
+        for model in (MetricSample, DeviceBaseline, Alert, ConfigVersion):
+            await s.execute(sa_delete(model).where(model.device_id == device_id))
         await s.delete(dev)
         await s.commit()
     return {"ok": True}
