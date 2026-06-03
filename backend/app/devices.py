@@ -146,10 +146,61 @@ def snmp_interfaces(ip, community, version="2c"):
     return out
 
 
-def _ssh_probe(ip, port, user, pw):
-    """SSH-based fingerprint using asyncssh (same path as the live terminal,
-    which handles the legacy algorithms older Cisco gear requires). Runs
-    'show version' and classifies the output. Returns a probe dict."""
+def snmp_metrics(ip, community, version="2c"):
+    """Poll device-level health metrics over SNMP. Returns
+    {cpu: %, mem: %, uptime: "Nd Nh", uptime_secs: int, reachable: bool}.
+    Tries Cisco-specific OIDs first, then generic HOST-RESOURCES-MIB, so it
+    degrades gracefully across vendors. Any field that can't be read is left at
+    0 rather than failing the whole poll."""
+    out = {"cpu": 0.0, "mem": 0.0, "uptime": "—", "uptime_secs": 0, "reachable": False}
+
+    # ── uptime: sysUpTime.0 is universal, value is in hundredths of a second ──
+    upt = _snmp_get(ip, community, "1.3.6.1.2.1.1.3.0", version)
+    if upt is not None:
+        out["reachable"] = True
+        try:
+            # snmpget may return "12345" or "Timeticks: (12345) 0:02:03.45"
+            import re as _re
+            m = _re.search(r"\((\d+)\)", str(upt)) or _re.search(r"(\d+)", str(upt))
+            ticks = int(m.group(1)) if m else 0
+            secs = ticks // 100
+            out["uptime_secs"] = secs
+            days, rem = divmod(secs, 86400)
+            hours = rem // 3600
+            out["uptime"] = f"{days}d {hours}h"
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ── CPU: Cisco cpmCPUTotal5minRev, then 5min, then generic hrProcessorLoad ─
+    cpu = (_snmp_get(ip, community, "1.3.6.1.4.1.9.9.109.1.1.1.1.8.1", version)
+           or _snmp_get(ip, community, "1.3.6.1.4.1.9.9.109.1.1.1.1.5.1", version))
+    if cpu is None:
+        # average all processor cores from HOST-RESOURCES-MIB
+        loads = _snmp_walk(ip, community, "1.3.6.1.2.1.25.3.3.1.2", version)
+        vals = [float(v) for v in loads.values() if str(v).strip().replace(".", "").isdigit()]
+        if vals:
+            cpu = sum(vals) / len(vals)
+    if cpu is not None:
+        try:
+            out["cpu"] = round(float(cpu), 1)
+            out["reachable"] = True
+        except (TypeError, ValueError):
+            pass
+
+    # ── memory: Cisco ciscoMemoryPool used/free -> %, then hrStorage fallback ──
+    used = _snmp_get(ip, community, "1.3.6.1.4.1.9.9.48.1.1.1.5.1", version)
+    free = _snmp_get(ip, community, "1.3.6.1.4.1.9.9.48.1.1.1.6.1", version)
+    try:
+        if used is not None and free is not None:
+            u, f = float(used), float(free)
+            total = u + f
+            if total > 0:
+                out["mem"] = round(u / total * 100.0, 1)
+                out["reachable"] = True
+    except (TypeError, ValueError):
+        pass
+
+    return out
     import asyncio as _aio
     import asyncssh
 

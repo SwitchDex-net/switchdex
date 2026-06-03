@@ -1694,6 +1694,22 @@ function AppInner({auth, onLogout}) {
 
   const sel = devices.find(d=>d.id===selId);
 
+  // Live device-level metrics (latest sampled CPU/mem/uptime) for the detail panel.
+  const [liveSummary, setLiveSummary] = useState(null);
+  useEffect(() => {
+    setLiveSummary(null);
+    if (MOCK_MODE || !sel) return;
+    let alive = true;
+    api.metricSummary(sel.id)
+      .then(s => { if (alive) setLiveSummary(s); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [selId]);
+  // merged view: prefer freshly-sampled values, fall back to the device row
+  const liveCpu = liveSummary && liveSummary.cpu != null ? Math.round(liveSummary.cpu) : (sel?.cpu ?? 0);
+  const liveMem = liveSummary && liveSummary.mem != null ? Math.round(liveSummary.mem) : (sel?.mem ?? 0);
+  const liveUptime = (sel?.uptime && sel.uptime !== "—") ? sel.uptime : (liveSummary?.uptime || "—");
+
   // Real mode: pull live interfaces from the device when its detail opens.
   useEffect(() => {
     if (MOCK_MODE || !sel) return;
@@ -1885,7 +1901,7 @@ function AppInner({auth, onLogout}) {
                     {ro && (
                       <div><div className="sec-title">Live metrics</div>
                         <div className="metric-grid">
-                          {[["CPU",sel.cpu+"%"],["Memory",sel.mem+"%"],["Uptime",sel.uptime],["Clients",(sel.interfaces?Object.values(sel.interfaces).filter(i=>i.status==="up").length*4:0)+""]].map(([k,v])=>(
+                          {[["CPU",liveCpu+"%"],["Memory",liveMem+"%"],["Uptime",liveUptime],["Clients",(sel.interfaces?Object.values(sel.interfaces).filter(i=>i.status==="up").length*4:0)+""]].map(([k,v])=>(
                             <div className="metric-card" key={k}><div className="metric-label">{k}</div><div className="metric-val">{v}</div></div>
                           ))}
                         </div>
@@ -1893,7 +1909,7 @@ function AppInner({auth, onLogout}) {
                     )}
 
                     <div><div className="sec-title">System</div>
-                      <div className="dgrid">{[["OS",sel.os],["Protocol",sel.protocol],["Location",sel.location],["Uptime",sel.uptime],["CPU",sel.status!=="down"?sel.cpu+"%":"—"],["Memory",sel.status!=="down"?sel.mem+"%":"—"]].map(([k,v])=>(<div className="dkv" key={k}><div className="dkv-k">{k}</div><div className="dkv-v">{String(v)}</div></div>))}</div>
+                      <div className="dgrid">{[["OS",sel.os],["Protocol",sel.protocol],["Location",sel.location],["Uptime",liveUptime],["CPU",sel.status!=="down"?liveCpu+"%":"—"],["Memory",sel.status!=="down"?liveMem+"%":"—"]].map(([k,v])=>(<div className="dkv" key={k}><div className="dkv-k">{k}</div><div className="dkv-v">{String(v)}</div></div>))}</div>
                     </div>
 
                     <DetailSparklines device={sel} onExpand={()=>setView("telemetry")}/>

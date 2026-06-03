@@ -20,6 +20,7 @@ live devices; in real mode the device/connector drivers supply the numbers.
 import datetime as dt
 import random
 import math
+import asyncio
 
 from sqlalchemy import select, delete, func
 
@@ -65,7 +66,26 @@ async def _sample_device(dev):
                 return float(m.get("cpu", 0)), float(m.get("mem", 0)), 1.0, ports
             except Exception:  # noqa: BLE001
                 return 0, 0, 0.0, {}
-        # open-protocol real polling hook would go here (SNMP ifHCInOctets etc.)
+        # open-protocol devices: poll health over SNMP (CPU/mem/uptime)
+        community = dev.snmp_community or settings.default_snmp_community
+        if community and dev.ip:
+            try:
+                from . import devices as drv
+                m = await asyncio.to_thread(drv.snmp_metrics, dev.ip, community)
+                reachable = 1.0 if m.get("reachable") else (1.0 if dev.status == "up" else 0.0)
+                # persist uptime back onto the device row so the UI shows it
+                if m.get("uptime") and m["uptime"] != "—":
+                    try:
+                        async with SessionLocal() as s2:
+                            d2 = await s2.get(Device, dev.id)
+                            if d2:
+                                d2.uptime = m["uptime"]
+                                await s2.commit()
+                    except Exception:  # noqa: BLE001
+                        pass
+                return float(m.get("cpu", 0)), float(m.get("mem", 0)), reachable, {}
+            except Exception:  # noqa: BLE001
+                return 0, 0, (1.0 if dev.status == "up" else 0.0), {}
         return float(getattr(dev, "cpu", 0) or 0), float(getattr(dev, "mem", 0) or 0), \
             (1.0 if dev.status == "up" else 0.0), {}
 
