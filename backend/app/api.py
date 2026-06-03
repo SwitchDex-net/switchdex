@@ -110,6 +110,45 @@ async def add_device(body: DeviceIn):
         return _dev_out(dev)
 
 
+class IfConfigIn(BaseModel):
+    desc: str | None = None
+    mode: str | None = None
+    vlan: str | None = None
+    ip: str | None = None
+    speed: str | None = None
+    duplex: str | None = None
+    shutdown: bool | None = None
+
+
+@router.post("/devices/{device_id}/interfaces/{ifname:path}/preview")
+async def preview_iface(device_id: int, ifname: str, body: IfConfigIn):
+    """Return the exact CLI commands that an apply would send — no device contact."""
+    cfg = body.model_dump(exclude_unset=True)
+    return {"commands": drv.preview_interface_commands(ifname, cfg)}
+
+
+@router.post("/devices/{device_id}/interfaces/{ifname:path}/apply")
+async def apply_iface(device_id: int, ifname: str, body: IfConfigIn):
+    """Push interface config to the device over SSH, then read it back to verify."""
+    async with SessionLocal() as s:
+        dev = await s.get(Device, device_id)
+        if not dev:
+            raise HTTPException(404, "Device not found")
+        if dev.capability == "readonly":
+            raise HTTPException(409, "Device is read-only (controller-managed).")
+        if settings.device_backend == "sim":
+            return {"ok": True, "output": "(simulation mode — not sent to a device)",
+                    "commands": [], "verify": ""}
+        user = dev.ssh_username or settings.default_ssh_username
+        pw = dev.ssh_password or settings.default_ssh_password
+        if not user:
+            raise HTTPException(400, "No SSH credentials configured for this device.")
+        cfg = body.model_dump(exclude_unset=True)
+        result = await asyncio.to_thread(drv.apply_interface_config,
+                                         dev.ip, dev.ssh_port, user, pw, ifname, cfg, dev.platform)
+        return result
+
+
 @router.get("/devices/{device_id}/interfaces")
 async def device_interfaces_live(device_id: int):
     """Enumerate the device's interfaces live (SNMP ifTable in real mode)."""

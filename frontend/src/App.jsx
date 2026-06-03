@@ -53,6 +53,8 @@ const api = {
   deleteDevice: (id) => _req(`/devices/${id}`, { method: "DELETE" }),
   deviceInterfaces: (id) => _req(`/devices/${id}/interfaces`),
   editDevice: (id, patch) => _req(`/devices/${id}`, { method: "PATCH", body: patch }),
+  previewIface: (id, ifname, cfg) => _req(`/devices/${id}/interfaces/${encodeURIComponent(ifname)}/preview`, { method: "POST", body: cfg }),
+  applyIface: (id, ifname, cfg) => _req(`/devices/${id}/interfaces/${encodeURIComponent(ifname)}/apply`, { method: "POST", body: cfg, timeoutMs: 45000 }),
   listConfigs: (id) => _req(`/devices/${id}/configs`),
   getConfig: (id, vid) => _req(`/devices/${id}/configs/${vid}`),
   diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${a}&b=${b}`),
@@ -986,16 +988,36 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
   const [speed,setSpeed] = useState(orig.speed||"auto");
   const [enabled,setEnabled] = useState(!orig.shutdown);
   const [saved,setSaved] = useState(false);
+  const [pending,setPending] = useState(null);   // {cfg, commands} awaiting confirm
+  const [busy,setBusy] = useState(false);
+  const [result,setResult] = useState(null);     // {ok, output, verify, error}
 
   const vlanOptions = Array.from(new Set([...Object.keys(device.vlans||{}), vlan])).filter(Boolean).sort((a,b)=>+a-+b);
 
-  function apply() {
-    const cfg = { desc, mode, speed, shutdown:!enabled, status: enabled?"up":"down" };
-    if (mode==="access") { cfg.vlan=vlan; cfg.ip=""; }
-    else if (mode==="trunk") { cfg.vlan=null; cfg.ip=""; }
-    else if (mode==="routed") { cfg.vlan=null; cfg.ip = ip?`${ip}/${maskToCidr(mask)}`:""; }
-    onApply(ifaceName, cfg);
-    setSaved(true); setTimeout(()=>setSaved(false),3000);
+  function buildCfg() {
+    const cfg = { desc, mode, speed, shutdown:!enabled };
+    if (mode==="access") { cfg.vlan=vlan; }
+    else if (mode==="routed") { cfg.ip = ip?`${ip}/${maskToCidr(mask)}`:""; }
+    return cfg;
+  }
+
+  function startApply() {
+    if (MOCK_MODE) { onApply(ifaceName, {...buildCfg(), status: enabled?"up":"down"}); setSaved(true); setTimeout(()=>setSaved(false),3000); return; }
+    const cfg = buildCfg();
+    setBusy(true); setResult(null);
+    api.previewIface(device.id, ifaceName, cfg)
+      .then(r => { setBusy(false); setPending({ cfg, commands: r.commands }); })
+      .catch(e => { setBusy(false); setResult({ ok:false, error:"Preview failed: "+e.message }); });
+  }
+
+  function confirmApply() {
+    setBusy(true);
+    api.applyIface(device.id, ifaceName, pending.cfg)
+      .then(r => {
+        setBusy(false); setPending(null); setResult(r);
+        if (r.ok) { onApply(ifaceName, {...pending.cfg, status: enabled?"up":"down"}); setSaved(true); setTimeout(()=>setSaved(false),4000); }
+      })
+      .catch(e => { setBusy(false); setPending(null); setResult({ ok:false, error:"Apply failed: "+e.message }); });
   }
   function reset() {
     setDesc(orig.desc||""); setMode(orig.mode||"access"); setVlan(orig.vlan||"1");
@@ -1074,12 +1096,33 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
         </div>
       </div>
 
-      {saved && <div className="saved-toast">{IC.check} Configuration applied to {device.name} via {device.protocol}</div>}
+      {saved && <div className="saved-toast">{IC.check} Configuration applied to {device.name} via SSH</div>}
+
+      {pending && (
+        <div style={{background:"#0d1117",border:"1px solid #d29922",borderRadius:8,padding:"12px 14px",marginTop:12}}>
+          <div style={{fontSize:12,fontWeight:600,color:"#e3b341",marginBottom:8}}>Review commands to send to {device.name} ({device.ip})</div>
+          <pre style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:"#cdd9e5",background:"#010409",padding:"8px 10px",borderRadius:6,overflow:"auto",margin:0,whiteSpace:"pre-wrap"}}>{pending.commands.join("\n")}</pre>
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <button className="ed-btn reset" onClick={()=>setPending(null)} disabled={busy}>Cancel</button>
+            <button className="ed-btn apply" onClick={confirmApply} disabled={busy}>{busy?"Sending…":"Confirm & send to device"}</button>
+          </div>
+        </div>
+      )}
+
+      {result && (
+        <div style={{background:"#0d1117",border:`1px solid ${result.ok?"#238636":"#f85149"}`,borderRadius:8,padding:"12px 14px",marginTop:12}}>
+          <div style={{fontSize:12,fontWeight:600,color:result.ok?"#3fb950":"#f85149",marginBottom:8}}>
+            {result.ok ? "✓ Applied successfully" : "✗ " + (result.error || "Device reported errors")}
+          </div>
+          {result.errors && result.errors.length>0 && <pre style={{fontSize:11,color:"#f85149",background:"#010409",padding:"8px 10px",borderRadius:6,margin:"0 0 8px",whiteSpace:"pre-wrap"}}>{result.errors.join("\n")}</pre>}
+          {result.verify && <><div style={{fontSize:11,color:"#8b949e",marginBottom:4}}>Device config now:</div><pre style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:"#cdd9e5",background:"#010409",padding:"8px 10px",borderRadius:6,overflow:"auto",margin:0,maxHeight:160,whiteSpace:"pre-wrap"}}>{result.verify}</pre></>}
+        </div>
+      )}
 
       <div className="ed-actions">
-        <button className="ed-btn reset" onClick={reset}>Reset</button>
-        <button className="ed-btn apply" onClick={apply}>{IC.check} Apply changes</button>
-        <button className="ed-btn ssh" title="Configure via SSH instead" onClick={onSSH}>{IC.terminal}</button>
+        <button className="ed-btn reset" onClick={reset} disabled={busy}>Reset</button>
+        <button className="ed-btn apply" onClick={startApply} disabled={busy||!!pending}>{IC.check} {busy&&!pending?"Checking…":"Apply changes"}</button>
+        <button className="ed-btn ssh" title="Configure via SSH terminal instead" onClick={onSSH}>{IC.terminal}</button>
       </div>
     </div>
   );

@@ -178,6 +178,106 @@ def _ssh_probe(ip, port, user, pw):
     return fp
 
 
+def build_interface_commands(ifname, cfg, platform="ios"):
+    """Translate a desired interface config into CLI commands (Cisco IOS-style).
+    Only emits commands for fields present in `cfg`. Returns a list of command
+    lines (without the enclosing 'configure terminal'/'end')."""
+    cmds = [f"interface {ifname}"]
+    if cfg.get("desc") is not None:
+        d = cfg["desc"].strip()
+        cmds.append(f"description {d}" if d else "no description")
+    mode = cfg.get("mode")
+    if mode == "access":
+        cmds.append("switchport mode access")
+        if cfg.get("vlan"):
+            cmds.append(f"switchport access vlan {cfg['vlan']}")
+    elif mode == "trunk":
+        cmds.append("switchport trunk encapsulation dot1q")
+        cmds.append("switchport mode trunk")
+    elif mode == "routed":
+        cmds.append("no switchport")
+        ip = cfg.get("ip", "")
+        if ip and "/" in ip:
+            addr, bits = ip.split("/")
+            cmds.append(f"ip address {addr} {cidrToMask(bits)}")
+        elif not ip:
+            cmds.append("no ip address")
+    sp = cfg.get("speed")
+    if sp and sp != "auto":
+        smap = {"10M": "10", "100M": "100", "1G": "1000", "10G": "10000"}
+        cmds.append(f"speed {smap.get(sp, 'auto')}")
+    elif sp == "auto":
+        cmds.append("speed auto")
+    if cfg.get("duplex"):
+        cmds.append(f"duplex {cfg['duplex']}")
+    # shutdown state last, so other settings apply before a possible disable
+    if "shutdown" in cfg:
+        cmds.append("shutdown" if cfg["shutdown"] else "no shutdown")
+    return cmds
+
+
+def preview_interface_commands(ifname, cfg, platform="ios"):
+    """Full command sequence (with config-mode wrappers) as text, for the
+    confirm-before-apply preview."""
+    body = build_interface_commands(ifname, cfg, platform)
+    return "configure terminal\n " + "\n ".join(body) + "\nend\nwrite memory"
+
+
+def apply_interface_config(ip, port, user, pw, ifname, cfg, platform="ios"):
+    """Push interface config over SSH (asyncssh shell — same path as the working
+    terminal). Returns {ok, output, verify, commands, errors}. Never raises;
+    errors come back in the dict so the UI shows the device's actual response."""
+    import asyncio as _aio
+    import asyncssh
+
+    LEGACY_KEX = ["diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1",
+                  "diffie-hellman-group14-sha256", "curve25519-sha256",
+                  "ecdh-sha2-nistp256", "diffie-hellman-group16-sha512"]
+    LEGACY_HKEY = ["ssh-rsa", "rsa-sha2-256", "rsa-sha2-512", "ssh-ed25519",
+                   "ecdsa-sha2-nistp256"]
+    body = build_interface_commands(ifname, cfg, platform)
+    sequence = ["configure terminal"] + body + ["end", "write memory"]
+
+    async def _drain(proc, timeout=1.0):
+        buf = ""
+        try:
+            while True:
+                chunk = await _aio.wait_for(proc.stdout.read(4096), timeout=timeout)
+                if not chunk:
+                    break
+                buf += chunk
+        except _aio.TimeoutError:
+            pass
+        return buf
+
+    async def _go():
+        async with asyncssh.connect(ip, port=port, username=user, password=pw,
+                                    known_hosts=None, kex_algs=LEGACY_KEX,
+                                    server_host_key_algs=LEGACY_HKEY,
+                                    connect_timeout=8) as conn:
+            proc = await conn.create_process(term_type="vt100", encoding="utf-8")
+            proc.stdin.write("terminal length 0\n")
+            await _aio.sleep(0.3)
+            await _drain(proc, 0.5)
+            for line in sequence:
+                proc.stdin.write(line + "\n")
+                await _aio.sleep(0.25)
+            collected = await _drain(proc, 1.0)
+            proc.stdin.write(f"show running-config interface {ifname}\n")
+            await _aio.sleep(0.6)
+            verify = await _drain(proc, 1.0)
+            proc.stdin.write("exit\n")
+            return collected, verify
+
+    try:
+        out, verify = _aio.run(_aio.wait_for(_go(), timeout=30))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"Config push failed: {e}", "commands": sequence}
+    err_lines = [ln for ln in out.splitlines() if ln.strip().startswith("%")]
+    return {"ok": not err_lines, "output": out, "verify": verify,
+            "commands": sequence, "errors": err_lines}
+
+
 def _real_probe(ip, auth, snmp_community, ssh_username, ssh_password):
     """Identify a device. `auth='ssh'` → SSH only; otherwise SNMP first, then SSH."""
     user = ssh_username or settings.default_ssh_username
