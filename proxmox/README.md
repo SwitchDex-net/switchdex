@@ -9,7 +9,7 @@ Proxmox homelab or small-business node.
 Run **on the Proxmox host** (as root):
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.0.0/proxmox/switchdex.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.6.0/proxmox/switchdex.sh)"
 ```
 
 You'll be prompted for container ID, hostname, cores/RAM/disk, network bridge,
@@ -39,7 +39,7 @@ Browse to `https://<container-ip>`, accept the self-signed certificate, log in a
 ## Update
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.0.0/proxmox/update.sh)" -- <CTID>
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.6.0/proxmox/update.sh)" -- <CTID>
 ```
 
 Data lives in Docker volumes (`pg_data`, `config_repo`), so inventory, the config

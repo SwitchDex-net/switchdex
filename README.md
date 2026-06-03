@@ -4,33 +4,37 @@
 
 <h1 align="center">SwitchDex</h1>
 
-<p align="center"><strong>Open-source network infrastructure monitoring for small business.</strong></p>
+<p align="center"><strong>Open-source, vendor-neutral network management for small business.</strong></p>
 
 SwitchDex is a vendor-neutral platform for discovering, monitoring, and managing
 your network — switches, routers, firewalls — plus read-only visibility into
-closed ecosystems like Ubiquiti UniFi and TP-Link Omada. It's built to be
-self-hosted and easy to deploy: import a VM appliance, run one command on
-Proxmox, or `docker compose up`.
+closed ecosystems like Ubiquiti UniFi and TP-Link Omada. It manages directly
+reachable devices over SSH and SNMP (read *and* write, with a safe preview →
+confirm → verify flow for every config change) and brings controller-managed
+gear into the same inventory as read-only devices. It's built to be self-hosted
+and easy to deploy: import a VM appliance, run one command on Proxmox, or
+`docker compose up`.
 
 ```
-Browser ──HTTPS/WSS──▶ SwitchDex ──SSH / SNMP / NETCONF / controller APIs──▶ Devices
- (no creds)            (creds, scheduler, git archive, telemetry, DB)        (mgmt net)
+Browser ──HTTPS/WSS──▶ SwitchDex ──SSH / SNMP / controller APIs──▶ Devices
+ (no creds)            (creds, scheduler, git archive, telemetry, DB)   (mgmt net)
 ```
 
 Device credentials live on the server, never in the browser.
 
 ## Features
 
-- **Inventory & discovery** — probe devices by SNMP/SSH, auto-identify vendor/model/OS
-- **Switch faceplate & port config** — click a port, edit it, with a live CLI preview
-- **SSH terminal** — full in-browser terminal proxied to the device
+- **Inventory & discovery** — probe devices by SNMP or SSH, auto-identify vendor/model/OS, and auto-populate hostname/location from the device (SNMP `sysName`/`sysLocation`)
+- **Live interface configuration** — click a port, edit it, and push the change to the device with a **safe apply** flow: SwitchDex previews the exact CLI commands, you confirm, it pushes over SSH and then reads the interface back to verify the change landed
+- **Multi-vendor command generation** — interface config is generated per platform: Cisco IOS/NX-OS, Arista EOS, Juniper Junos (set/commit model), SONiC, and Brocade FastIron
+- **SSH terminal** — full in-browser terminal proxied to the device, handling legacy crypto on older gear
 - **Config archive** — git-backed running-config history with diffs, change detection, and restore
 - **Topology** — auto-generated network map (force-directed or layered) from neighbor data
 - **Alerting** — preset + custom rules, full open→ack→resolve lifecycle, with email / webhook / syslog / Discord notifications
 - **Compliance** — policy checks (required/forbidden config) plus per-device golden-baseline drift
 - **Telemetry** — time-series CPU, memory, reachability, and per-interface throughput, with inline sparklines and a full charts view
-- **Closed ecosystems** — read-only metrics from UniFi and Omada controllers, clearly marked
-- **Auth** — local accounts + optional LDAP / Active Directory, role-based access, and a forced password change for the break-glass admin on first login
+- **Closed ecosystems** — connect UniFi and Omada controllers to pull their devices into inventory as **read-only**, clearly marked, with a one-click deep-link back to the vendor controller for changes
+- **Auth** — local accounts + optional LDAP / Active Directory, role-based access, persistent sessions across refresh, and a forced password change for the break-glass admin on first login
 
 ## Quick start
 
@@ -88,11 +92,19 @@ in [frontend/INTEGRATION.md](frontend/INTEGRATION.md).
 ## Status
 
 SwitchDex runs in **real-device mode by default** — a fresh install is an empty,
-production-ready inventory you populate with your own gear. Real-device support
-uses NAPALM / Netmiko / asyncssh and SNMP for open protocols, plus the UniFi /
-Omada controller APIs (read-only). A built-in simulation mode
-(`DEVICE_BACKEND=sim`, `SEED_DEMO_DEVICES=true`) lets you explore the entire
-product with no hardware.
+production-ready inventory you populate with your own gear. Discovery, the SSH
+terminal, and live config push use **asyncssh** (handling the legacy key-exchange
+and host-key algorithms older switches still require) plus **SNMP** for
+fingerprinting and metadata; the config archive uses **NAPALM** for structured
+config get/replace. Closed ecosystems connect through the **UniFi / Omada
+controller APIs** (read-only). A built-in simulation mode (`DEVICE_BACKEND=sim`,
+`SEED_DEMO_DEVICES=true`) lets you explore the entire product with no hardware.
+
+> **Multi-vendor note:** config push is verified against Cisco IOS hardware.
+> Arista EOS, Juniper Junos, SONiC, and Brocade command generation is
+> implemented and structurally correct but not yet verified against physical
+> devices of those vendors — the safe-apply preview lets you review the exact
+> commands before anything is sent.
 
 ## Contributing
 

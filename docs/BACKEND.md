@@ -21,9 +21,9 @@ no command line.
 
 ```
 cd appliance
-make build VERSION=1.0.0
-# -> output/switchdex-1.0.0.qcow2   (KVM / Proxmox)
-# -> output/switchdex-1.0.0.ova     (VMware / VirtualBox)
+make build VERSION=1.6.0
+# -> output/switchdex-1.6.0.qcow2   (KVM / Proxmox)
+# -> output/switchdex-1.6.0.ova     (VMware / VirtualBox)
 ```
 
 On first power-on the image generates its own random secrets, detects its IP,
@@ -32,7 +32,7 @@ and starts the stack. The operator just browses to `https://<appliance-ip>`.
 ### 2. Proxmox LXC (one command, lightest install)
 On the Proxmox host:
 ```
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.0.0/proxmox/switchdex.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.6.0/proxmox/switchdex.sh)"
 ```
 Creates a Debian LXC (Docker-in-LXC, nesting+keyctl enabled), deploys the stack,
 generates secrets, and auto-starts it. See `proxmox/README.md`. Update later with

@@ -29,13 +29,13 @@ the Ubuntu ISO and Docker images).
 ```bash
 cd appliance
 make validate                 # optional: sanity-check the template
-make build VERSION=1.0.0      # produces both images (15-40 min)
+make build VERSION=1.6.0      # produces both images (15-40 min)
 ```
 
 Outputs:
 ```
-packer/output/qemu/switchdex-1.0.0.qcow2   ← Proxmox / KVM
-packer/output/switchdex-1.0.0.ova          ← VMware / VirtualBox
+packer/output/qemu/switchdex-1.6.0.qcow2   ← Proxmox / KVM
+packer/output/switchdex-1.6.0.ova          ← VMware / VirtualBox
 ```
 
 ## If the ISO link is dead
@@ -58,7 +58,7 @@ and skip the export by removing (or commenting out) the `post-processor
 ```bash
 # boot the qcow2 locally and watch the console
 qemu-system-x86_64 -enable-kvm -m 4096 -smp 2 \
-  -drive file=packer/output/qemu/switchdex-1.0.0.qcow2,format=qcow2 \
+  -drive file=packer/output/qemu/switchdex-1.6.0.qcow2,format=qcow2 \
   -nic user,hostfwd=tcp::8443-:443
 ```
 

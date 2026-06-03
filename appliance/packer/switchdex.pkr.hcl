@@ -14,7 +14,7 @@ packer {
   }
 }
 
-variable "version"      { default = "1.0.0" }
+variable "version"      { default = "1.6.0" }
 variable "iso_url"      { default = "https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso" }
 variable "iso_checksum" { default = "file:https://releases.ubuntu.com/24.04/SHA256SUMS" }
 variable "disk_size"    { default = "40960" }   # 40 GB

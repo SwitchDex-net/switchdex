@@ -65,11 +65,11 @@ Your code is now live at `https://github.com/switchdex-net/switchdex`.
 Pin installs to a version rather than a moving `main`:
 
 ```bash
-git tag -a v1.0.0 -m "SwitchDex 1.0.0"
-git push origin v1.0.0
+git tag -a v1.6.0 -m "SwitchDex 1.6.0"
+git push origin v1.6.0
 ```
 
-Then on GitHub → **Releases** → **Draft a new release** → choose `v1.0.0`.
+Then on GitHub → **Releases** → **Draft a new release** → choose `v1.6.0`.
 
 ## 6. The install command (served from GitHub)
 
@@ -77,18 +77,18 @@ The install scripts and docs already point at **GitHub raw**, so the Proxmox
 installer works the moment the repo is public — no website required:
 
 ```
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.0.0/proxmox/switchdex.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.6.0/proxmox/switchdex.sh)"
 ```
 
-Note this URL is pinned to the **`v1.0.0` tag**, so you must create that tag
+Note this URL is pinned to the **`v1.6.0` tag**, so you must create that tag
 (step 5) before the command resolves. Using a tag rather than `main` means the
 command is reproducible and won't change as you push new commits. When you cut a
-new release, bump the tag in the command (e.g. `v1.1.0`).
+new release, bump the tag in the command (e.g. `v1.7.0`).
 
 The `git clone` inside `proxmox/switchdex.sh` targets
 `github.com/switchdex-net/switchdex`. For production, pin it to the same tag:
 ```bash
-git clone --depth 1 --branch v1.0.0 https://github.com/switchdex-net/switchdex.git .
+git clone --depth 1 --branch v1.6.0 https://github.com/switchdex-net/switchdex.git .
 ```
 
 ### Later: a friendlier URL via switchdex.net (optional)
@@ -114,6 +114,6 @@ all you need. If you switch to switchdex.net URLs later, update the command in
 git add -A
 git commit -m "Describe what changed"
 git push
-# for a new release:
-git tag -a v1.1.0 -m "SwitchDex 1.1.0" && git push origin v1.1.0
+# for a new release (current is v1.6.0; bump as appropriate):
+git tag -a v1.7.0 -m "SwitchDex 1.7.0" && git push origin v1.7.0
 ```
