@@ -98,6 +98,19 @@ const api = {
   },
 };
 
+// Backend devices (from _dev_out) omit nested collections like interfaces/vlans
+// to keep the list payload small. Fill in safe empty defaults so the detail
+// panel's Object.entries/keys calls never hit undefined/null.
+function normalizeDevice(d) {
+  return {
+    cpu: 0, mem: 0, uptime: "—",
+    ospfNets: [], staticRoutes: [], ntpServers: [],
+    ...d,
+    interfaces: d.interfaces || {}, vlans: d.vlans || {},
+    bgpPeers: d.bgpPeers || [], aclDefs: d.aclDefs || {},
+  };
+}
+
 
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');`;
 
@@ -974,7 +987,7 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
   const [enabled,setEnabled] = useState(!orig.shutdown);
   const [saved,setSaved] = useState(false);
 
-  const vlanOptions = Array.from(new Set([...Object.keys(device.vlans), vlan])).filter(Boolean).sort((a,b)=>+a-+b);
+  const vlanOptions = Array.from(new Set([...Object.keys(device.vlans||{}), vlan])).filter(Boolean).sort((a,b)=>+a-+b);
 
   function apply() {
     const cfg = { desc, mode, speed, shutdown:!enabled, status: enabled?"up":"down" };
@@ -1028,7 +1041,7 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
       {mode==="trunk" && (
         <div className="ed-field">
           <label className="ed-label">Allowed VLANs (trunk)</label>
-          <input className="ed-input" defaultValue={Object.keys(device.vlans).join(",")} placeholder="1,10,20,100"/>
+          <input className="ed-input" defaultValue={Object.keys(device.vlans||{}).join(",")} placeholder="1,10,20,100"/>
         </div>
       )}
       {mode==="routed" && (
@@ -1631,7 +1644,7 @@ function AppInner({auth, onLogout}) {
     if (MOCK_MODE) return;
     let alive = true;
     api.listDevices()
-      .then(ds => { if (alive) { setDevices(ds); setLoading(false); } })
+      .then(ds => { if (alive) { setDevices(ds.map(normalizeDevice)); setLoading(false); } })
       .catch(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
@@ -1868,8 +1881,8 @@ function AppInner({auth, onLogout}) {
                       </>;
                     })()}
 
-                    {Object.keys(sel.vlans).length>0 && (
-                      <div><div className="sec-title">VLANs</div><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{Object.entries(sel.vlans).map(([id,v])=>(<span key={id} className="vtag">{id} {v.name}</span>))}</div></div>
+                    {Object.keys(sel.vlans||{}).length>0 && (
+                      <div><div className="sec-title">VLANs</div><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{Object.entries(sel.vlans||{}).map(([id,v])=>(<span key={id} className="vtag">{id} {v.name}</span>))}</div></div>
                     )}
 
                     {ro ? (
