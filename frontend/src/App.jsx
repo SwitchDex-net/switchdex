@@ -18,13 +18,23 @@ let _token = null;
 function _loadTok() { if (_token) return _token; try { _token = localStorage.getItem("of_token"); } catch { _token = null; } return _token; }
 function _setTok(t) { _token = t; try { t ? localStorage.setItem("of_token", t) : localStorage.removeItem("of_token"); } catch {} }
 
-async function _req(path, { method = "GET", body, form } = {}) {
+async function _req(path, { method = "GET", body, form, timeoutMs = 30000 } = {}) {
   const headers = {}; const tok = _loadTok();
   if (tok) headers["Authorization"] = `Bearer ${tok}`;
   let payload;
   if (form) { headers["Content-Type"] = "application/x-www-form-urlencoded"; payload = new URLSearchParams(form).toString(); }
   else if (body !== undefined) { headers["Content-Type"] = "application/json"; payload = JSON.stringify(body); }
-  const res = await fetch(`${_API_BASE}/api${path}`, { method, headers, body: payload });
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`${_API_BASE}/api${path}`, { method, headers, body: payload, signal: ctl.signal });
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error("Request timed out — the device or backend did not respond.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   if (res.status === 401) { _setTok(null); window.dispatchEvent(new Event("of-unauthorized")); throw new Error("Unauthorized"); }
   if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch {} throw new Error(d); }
   if (res.status === 204) return null;
@@ -1161,7 +1171,7 @@ function fingerprint(ip){ const seed=(ip.split(".").reduce((a,o)=>a+parseInt(o||
 function AddDeviceModal({onClose, onAdd}) {
   const [ip,setIp]=useState(""); const [authMode,setAuthMode]=useState("snmpv2");
   const [community,setCommunity]=useState("public"); const [snmpUser,setSnmpUser]=useState("");
-  const [sshUser,setSshUser]=useState("netops"); const [phase,setPhase]=useState("form");
+  const [sshUser,setSshUser]=useState("netops"); const [sshPass,setSshPass]=useState(""); const [phase,setPhase]=useState("form");
   const [probeLog,setProbeLog]=useState([]); const [discovered,setDiscovered]=useState(null);
   const [devName,setDevName]=useState(""); const logRef=useRef(null);
   useEffect(()=>{ if(logRef.current)logRef.current.scrollTop=logRef.current.scrollHeight; },[probeLog]);
@@ -1245,7 +1255,7 @@ function AddDeviceModal({onClose, onAdd}) {
             </div>
             {authMode==="snmpv2" && <><label className="flabel">Community string</label><input className="finput" value={community} onChange={e=>setCommunity(e.target.value)} placeholder="public"/></>}
             {authMode==="snmpv3" && <><div className="frow" style={{marginBottom:12}}><div><label className="flabel">Username</label><input className="finput" value={snmpUser} onChange={e=>setSnmpUser(e.target.value)} placeholder="netops"/></div><div><label className="flabel">Auth pass</label><input className="finput" type="password" placeholder="••••••••"/></div></div><label className="flabel">Auth / Priv</label><select className="finput"><option>SHA / AES-128</option><option>SHA-256 / AES-256</option></select></>}
-            {authMode==="ssh" && <><div className="frow" style={{marginBottom:12}}><div><label className="flabel">Username</label><input className="finput" value={sshUser} onChange={e=>setSshUser(e.target.value)}/></div><div><label className="flabel">Password</label><input className="finput" type="password" placeholder="••••••••"/></div></div></>}
+            {authMode==="ssh" && <><div className="frow" style={{marginBottom:12}}><div><label className="flabel">Username</label><input className="finput" value={sshUser} onChange={e=>setSshUser(e.target.value)}/></div><div><label className="flabel">Password</label><input className="finput" type="password" value={sshPass} onChange={e=>setSshPass(e.target.value)} placeholder="••••••••"/></div></div></>}
           </>}
           {(phase==="probing"||phase==="discovered"||phase==="error") && <>
             {phase==="probing" && <div className="prog-bar"><div className="prog-fill" style={{width:"100%",animation:"prog 3.2s linear forwards"}}/></div>}
