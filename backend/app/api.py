@@ -87,7 +87,7 @@ async def list_devices():
 @router.post("/devices/probe")
 async def probe_device(body: ProbeIn):
     """Discovery: identify a device at an IP before adding it."""
-    fp = await drv.probe(body.ip, snmp_community=body.community,
+    fp = await drv.probe(body.ip, auth=body.auth, snmp_community=body.community,
                          ssh_username=body.username, ssh_password=body.password)
     return fp
 

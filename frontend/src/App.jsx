@@ -1173,8 +1173,9 @@ function AddDeviceModal({onClose, onAdd}) {
       // Real probe — ask the backend to query the device (SNMP/SSH).
       addLog(`Initiating discovery of ${ip}...`);
       addLog(authMode.startsWith("snmp")?`[→] SNMP ${authMode==="snmpv2"?"v2c":"v3"} — querying sysDescr...`:`[→] SSH ${ip} — grabbing banner...`);
-      api.probeDevice({ ip, community: authMode.startsWith("snmp")?community:"",
-                        ssh_username: authMode==="ssh"?sshUser:"", ssh_password: authMode==="ssh"?sshPass:"" })
+      api.probeDevice({ ip, auth: authMode,
+                        community: authMode.startsWith("snmp") ? community : "public",
+                        username: authMode==="ssh"?sshUser:"", password: authMode==="ssh"?sshPass:"" })
         .then(fp => {
           if (!fp || fp.reachable === false) { addLog(`[✗] No response from ${ip}. Check reachability/credentials.`,"err"); setPhase("error"); return; }
           addLog(`[✓] sysDescr: "${fp.sysdescr||fp.os||""}"`,"info");

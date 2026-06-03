@@ -34,11 +34,12 @@ async def push_config(dev, config_text: str) -> None:
     await asyncio.to_thread(_napalm_replace_config, dev, config_text)
 
 
-async def probe(ip: str, *, snmp_community="", ssh_username="", ssh_password="") -> dict:
-    """Discovery probe — identify a device at `ip`. Returns vendor/model/os/platform."""
+async def probe(ip: str, *, auth="snmpv2", snmp_community="", ssh_username="", ssh_password="") -> dict:
+    """Discovery probe — identify a device at `ip`. Returns vendor/model/os/platform.
+    `auth` selects the method: snmpv2/snmpv3 → SNMP, ssh → SSH only."""
     if settings.device_backend == "sim":
         return _sim_fingerprint(ip)
-    return await asyncio.to_thread(_real_probe, ip, snmp_community, ssh_username, ssh_password)
+    return await asyncio.to_thread(_real_probe, ip, auth, snmp_community, ssh_username, ssh_password)
 
 
 # ───────────────────────── real backend ────────────────────────────────
@@ -177,18 +178,23 @@ def _ssh_probe(ip, port, user, pw):
     return fp
 
 
-def _real_probe(ip, snmp_community, ssh_username, ssh_password):
-    """Try SNMP sysDescr first, then an SSH 'show version' fingerprint."""
+def _real_probe(ip, auth, snmp_community, ssh_username, ssh_password):
+    """Identify a device. `auth='ssh'` → SSH only; otherwise SNMP first, then SSH."""
+    user = ssh_username or settings.default_ssh_username
+    pw = ssh_password or settings.default_ssh_password
+
+    if auth == "ssh":
+        if not user:
+            return {"reachable": False, "error": "No SSH username provided and no default configured."}
+        return _ssh_probe(ip, 22, user, pw)
+
+    # SNMP-first (snmpv2/snmpv3), then fall back to SSH if SNMP is silent.
     community = snmp_community or settings.default_snmp_community
     descr = _snmp_sysdescr(ip, community)
     if descr:
         return _classify(descr, ip)
-    # Fall back to SSH (asyncssh — handles legacy Cisco algorithms, with timeouts
-    # so a stalled negotiation can't hang the probe).
-    user = ssh_username or settings.default_ssh_username
-    pw = ssh_password or settings.default_ssh_password
     if not user:
-        return {"reachable": False, "error": "No SSH username provided and no default configured."}
+        return {"reachable": False, "error": "SNMP returned nothing and no SSH username configured."}
     return _ssh_probe(ip, 22, user, pw)
 
 
