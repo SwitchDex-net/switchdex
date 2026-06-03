@@ -40,6 +40,7 @@ const api = {
   listDevices: () => _req("/devices"),
   probeDevice: (b) => _req("/devices/probe", { method: "POST", body: b }),
   addDevice: (d) => _req("/devices", { method: "POST", body: d }),
+  deleteDevice: (id) => _req(`/devices/${id}`, { method: "DELETE" }),
   listConfigs: (id) => _req(`/devices/${id}/configs`),
   getConfig: (id, vid) => _req(`/devices/${id}/configs/${vid}`),
   diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${a}&b=${b}`),
@@ -845,6 +846,7 @@ const IC = {
   plus:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
   refresh:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>,
   x:<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+  trash:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>,
   info:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
   edit:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
   layers:<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>,
@@ -1481,6 +1483,13 @@ function AppInner({auth, onLogout}) {
     setDevices(p=>[...p,dev]); setSelId(dev.id); setTab("detail"); setSelIface(null);
   }
   function applyIface(name,cfg){ setDevices(p=>p.map(d=>d.id===selId?{...d,interfaces:{...d.interfaces,[name]:{...d.interfaces[name],...cfg}}}:d)); }
+  function removeDevice(id){
+    const d = devices.find(x=>x.id===id);
+    if (!window.confirm(`Remove ${d?d.name:"this device"} from inventory? This removes it from SwitchDex; it does not change the device itself.`)) return;
+    if (!MOCK_MODE) { api.deleteDevice(id).catch(e=>alert("Delete failed: "+e.message)); }
+    setDevices(p=>p.filter(x=>x.id!==id));
+    if (selId===id) setSelId(null);
+  }
   function pickDevice(id){ setSelId(id); setTab("detail"); setSelIface(null); setView("inventory"); }
 
   // Pull running-config, hash it, store a new version only if it changed.
@@ -1580,7 +1589,7 @@ function AppInner({auth, onLogout}) {
                         <td><span className={`sbadge ${d.status}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>{d.status}</span></td>
                         <td>{d.status!=="down"?(<div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:44,height:4,background:"#21262d",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${d.cpu}%`,background:d.cpu>80?"#f85149":d.cpu>60?"#e3b341":"#3fb950",borderRadius:2}}/></div><span className="mono" style={{fontSize:11}}>{d.cpu}%</span></div>):<span className="mono">—</span>}</td>
                         <td><span className="mono" style={{fontSize:11}}>{d.uptime}</span></td>
-                        <td><div className="row-acts"><div className="act" title="Details" onClick={e=>{e.stopPropagation();pickDevice(d.id);}}>{IC.info}</div><div className="act term" title="SSH Terminal" onClick={e=>{e.stopPropagation();setSelId(d.id);setTab("ssh");setSelIface(null);}}>{IC.terminal}</div><div className="act" title="Edit" onClick={e=>e.stopPropagation()}>{IC.edit}</div></div></td>
+                        <td><div className="row-acts"><div className="act" title="Details" onClick={e=>{e.stopPropagation();pickDevice(d.id);}}>{IC.info}</div><div className="act term" title="SSH Terminal" onClick={e=>{e.stopPropagation();setSelId(d.id);setTab("ssh");setSelIface(null);}}>{IC.terminal}</div><div className="act" title="Remove device" onClick={e=>{e.stopPropagation();removeDevice(d.id);}} style={{color:"#f85149"}}>{IC.x}</div></div></td>
                       </tr>
                     ); })}
                   </tbody>
@@ -1594,7 +1603,8 @@ function AppInner({auth, onLogout}) {
                   <div className={`ptab ${tab==="detail"?"active":""}`} onClick={()=>{setTab("detail");}}>{selIface?"Interface":"Details"}</div>
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="configs"?"active":""}`} onClick={()=>setTab("configs")}>Configs</div>}
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="ssh"?"active":""}`} onClick={()=>setTab("ssh")}>Terminal</div>}
-                  <div className="pclose" onClick={()=>{setSelId(null);setSelIface(null);}}>{IC.x}</div>
+                  <div className="pclose" title="Remove device" onClick={()=>removeDevice(sel.id)} style={{marginLeft:"auto",color:"#f85149"}}>{IC.trash || IC.x}</div>
+                  <div className="pclose" title="Close" onClick={()=>{setSelId(null);setSelIface(null);}}>{IC.x}</div>
                 </div>
 
                 {tab==="detail" && !selIface && (() => { const ro = sel.capability==="readonly"; return (

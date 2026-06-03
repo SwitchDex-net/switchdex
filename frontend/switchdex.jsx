@@ -37,6 +37,7 @@ const api = {
   listDevices: () => _req("/devices"),
   probeDevice: (b) => _req("/devices/probe", { method: "POST", body: b }),
   addDevice: (d) => _req("/devices", { method: "POST", body: d }),
+  deleteDevice: (id) => _req(`/devices/${id}`, { method: "DELETE" }),
   listConfigs: (id) => _req(`/devices/${id}/configs`),
   getConfig: (id, vid) => _req(`/devices/${id}/configs/${vid}`),
   diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${a}&b=${b}`),
