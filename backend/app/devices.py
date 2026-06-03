@@ -178,10 +178,13 @@ def _ssh_probe(ip, port, user, pw):
     return fp
 
 
-def build_interface_commands(ifname, cfg, platform="ios"):
-    """Translate a desired interface config into CLI commands (Cisco IOS-style).
-    Only emits commands for fields present in `cfg`. Returns a list of command
-    lines (without the enclosing 'configure terminal'/'end')."""
+def _speed_token(sp, mapping):
+    return mapping.get(sp)
+
+
+def _cmds_ios(ifname, cfg):
+    """Cisco IOS / IOS-XE / NX-OS, Arista EOS, Brocade FastIron — all use the
+    classic 'interface X / switchport ... ' model. Differences are minor."""
     cmds = [f"interface {ifname}"]
     if cfg.get("desc") is not None:
         d = cfg["desc"].strip()
@@ -204,16 +207,145 @@ def build_interface_commands(ifname, cfg, platform="ios"):
             cmds.append("no ip address")
     sp = cfg.get("speed")
     if sp and sp != "auto":
-        smap = {"10M": "10", "100M": "100", "1G": "1000", "10G": "10000"}
-        cmds.append(f"speed {smap.get(sp, 'auto')}")
+        tok = _speed_token(sp, {"10M": "10", "100M": "100", "1G": "1000", "10G": "10000", "25G": "25000", "40G": "40000", "100G": "100000"})
+        if tok:
+            cmds.append(f"speed {tok}")
     elif sp == "auto":
         cmds.append("speed auto")
     if cfg.get("duplex"):
         cmds.append(f"duplex {cfg['duplex']}")
-    # shutdown state last, so other settings apply before a possible disable
     if "shutdown" in cfg:
         cmds.append("shutdown" if cfg["shutdown"] else "no shutdown")
     return cmds
+
+
+def _cmds_eos(ifname, cfg):
+    """Arista EOS — IOS-like, but trunk doesn't need 'encapsulation dot1q'."""
+    cmds = [f"interface {ifname}"]
+    if cfg.get("desc") is not None:
+        d = cfg["desc"].strip()
+        cmds.append(f"description {d}" if d else "no description")
+    mode = cfg.get("mode")
+    if mode == "access":
+        cmds.append("switchport mode access")
+        if cfg.get("vlan"):
+            cmds.append(f"switchport access vlan {cfg['vlan']}")
+    elif mode == "trunk":
+        cmds.append("switchport mode trunk")
+    elif mode == "routed":
+        cmds.append("no switchport")
+        ip = cfg.get("ip", "")
+        if ip and "/" in ip:
+            addr, bits = ip.split("/")
+            cmds.append(f"ip address {addr}/{bits}")
+        elif not ip:
+            cmds.append("no ip address")
+    sp = cfg.get("speed")
+    if sp and sp != "auto":
+        tok = _speed_token(sp, {"10M": "10full", "100M": "100full", "1G": "1000full",
+                                "10G": "10gfull", "25G": "25gfull", "40G": "40gfull", "100G": "100gfull"})
+        if tok:
+            cmds.append(f"speed forced {tok}")
+    elif sp == "auto":
+        cmds.append("speed auto")
+    if "shutdown" in cfg:
+        cmds.append("shutdown" if cfg["shutdown"] else "no shutdown")
+    return cmds
+
+
+def _cmds_junos(ifname, cfg):
+    """Juniper Junos — completely different model: 'set' statements under
+    [edit], applied with commit. We emit set/delete statements; the wrapper
+    adds 'configure' and 'commit'. Junos uses unit 0 for L2/L3 family."""
+    cmds = []
+    if cfg.get("desc") is not None:
+        d = cfg["desc"].strip()
+        cmds.append(f'set interfaces {ifname} description "{d}"' if d else f"delete interfaces {ifname} description")
+    mode = cfg.get("mode")
+    if mode == "access":
+        cmds.append(f"set interfaces {ifname} unit 0 family ethernet-switching interface-mode access")
+        if cfg.get("vlan"):
+            cmds.append(f"set interfaces {ifname} unit 0 family ethernet-switching vlan members {cfg['vlan']}")
+    elif mode == "trunk":
+        cmds.append(f"set interfaces {ifname} unit 0 family ethernet-switching interface-mode trunk")
+    elif mode == "routed":
+        ip = cfg.get("ip", "")
+        if ip and "/" in ip:
+            cmds.append(f"set interfaces {ifname} unit 0 family inet address {ip}")
+        elif not ip:
+            cmds.append(f"delete interfaces {ifname} unit 0 family inet")
+    sp = cfg.get("speed")
+    if sp and sp != "auto":
+        tok = _speed_token(sp, {"10M": "10m", "100M": "100m", "1G": "1g", "10G": "10g", "25G": "25g", "40G": "40g", "100G": "100g"})
+        if tok:
+            cmds.append(f"set interfaces {ifname} speed {tok}")
+    if "shutdown" in cfg:
+        cmds.append(f"set interfaces {ifname} disable" if cfg["shutdown"] else f"delete interfaces {ifname} disable")
+    return cmds
+
+
+def _cmds_sonic(ifname, cfg):
+    """SONiC — 'config' CLI utility (not a config-session model). Each setting
+    is its own 'config interface ...' command. No enclosing config mode."""
+    cmds = []
+    if cfg.get("desc") is not None:
+        d = cfg["desc"].strip()
+        cmds.append(f'config interface description {ifname} "{d}"')
+    mode = cfg.get("mode")
+    if mode == "access" and cfg.get("vlan"):
+        cmds.append(f"config vlan member add {cfg['vlan']} {ifname} --untagged")
+    elif mode == "trunk" and cfg.get("vlan"):
+        cmds.append(f"config vlan member add {cfg['vlan']} {ifname}")
+    elif mode == "routed":
+        ip = cfg.get("ip", "")
+        if ip and "/" in ip:
+            cmds.append(f"config interface ip add {ifname} {ip}")
+    sp = cfg.get("speed")
+    if sp and sp != "auto":
+        tok = _speed_token(sp, {"10M": "10", "100M": "100", "1G": "1000", "10G": "10000", "25G": "25000", "40G": "40000", "100G": "100000"})
+        if tok:
+            cmds.append(f"config interface speed {ifname} {tok}")
+    if "shutdown" in cfg:
+        cmds.append(f"config interface {'shutdown' if cfg['shutdown'] else 'startup'} {ifname}")
+    return cmds
+
+
+# platform → (body generator, wrapper style)
+#   wrapper "ios"   : configure terminal / <body> / end / write memory
+#   wrapper "junos" : configure / <body> / commit and-quit
+#   wrapper "sonic" : <body> (each line standalone) / config save -y
+_PLATFORM_GEN = {
+    "ios":      (_cmds_ios,   "ios"),
+    "nxos_ssh": (_cmds_ios,   "ios"),
+    "nxos":     (_cmds_ios,   "ios"),
+    "eos":      (_cmds_eos,   "ios"),
+    "brocade":  (_cmds_ios,   "ios"),   # FastIron/ICX is IOS-like
+    "fastiron": (_cmds_ios,   "ios"),
+    "junos":    (_cmds_junos, "junos"),
+    "sonic":    (_cmds_sonic, "sonic"),
+}
+
+
+def build_interface_commands(ifname, cfg, platform="ios"):
+    """Translate a desired interface config into CLI commands for the device's
+    platform. Returns the body command lines (no enclosing config-mode wrappers).
+    Falls back to IOS syntax for unknown platforms."""
+    gen, _ = _PLATFORM_GEN.get((platform or "ios").lower(), (_cmds_ios, "ios"))
+    return gen(ifname, cfg)
+
+
+def wrap_commands(body, platform="ios"):
+    """Wrap body commands in the platform's config-entry/commit/save sequence.
+    Returns the full command list to send over the SSH shell."""
+    _, style = _PLATFORM_GEN.get((platform or "ios").lower(), (_cmds_ios, "ios"))
+    if style == "junos":
+        return ["configure"] + body + ["commit and-quit"]
+    if style == "sonic":
+        return body + ["config save -y"]
+    # ios-style default
+    return ["configure terminal"] + body + ["end", "write memory"]
+
+
 
 
 def preview_interface_commands(ifname, cfg, platform="ios"):
@@ -236,7 +368,15 @@ def apply_interface_config(ip, port, user, pw, ifname, cfg, platform="ios"):
     LEGACY_HKEY = ["ssh-rsa", "rsa-sha2-256", "rsa-sha2-512", "ssh-ed25519",
                    "ecdsa-sha2-nistp256"]
     body = build_interface_commands(ifname, cfg, platform)
-    sequence = ["configure terminal"] + body + ["end", "write memory"]
+    sequence = wrap_commands(body, platform)
+    style = _PLATFORM_GEN.get((platform or "ios").lower(), (_cmds_ios, "ios"))[1]
+    # platform-specific no-paging + verify commands
+    pager_off = {"ios": "terminal length 0", "junos": "set cli screen-length 0",
+                 "sonic": ""}.get(style, "terminal length 0")
+    verify_cmd = {"ios": f"show running-config interface {ifname}",
+                  "junos": f"show configuration interfaces {ifname}",
+                  "sonic": f"show interfaces status {ifname}"}.get(style,
+                  f"show running-config interface {ifname}")
 
     async def _drain(proc, timeout=1.0):
         buf = ""
@@ -256,24 +396,33 @@ def apply_interface_config(ip, port, user, pw, ifname, cfg, platform="ios"):
                                     server_host_key_algs=LEGACY_HKEY,
                                     connect_timeout=8) as conn:
             proc = await conn.create_process(term_type="vt100", encoding="utf-8")
-            proc.stdin.write("terminal length 0\n")
-            await _aio.sleep(0.3)
-            await _drain(proc, 0.5)
+            if pager_off:
+                proc.stdin.write(pager_off + "\n")
+                await _aio.sleep(0.3)
+                await _drain(proc, 0.5)
             for line in sequence:
                 proc.stdin.write(line + "\n")
-                await _aio.sleep(0.25)
-            collected = await _drain(proc, 1.0)
-            proc.stdin.write(f"show running-config interface {ifname}\n")
+                await _aio.sleep(0.3)
+            collected = await _drain(proc, 1.2)
+            proc.stdin.write(verify_cmd + "\n")
             await _aio.sleep(0.6)
             verify = await _drain(proc, 1.0)
             proc.stdin.write("exit\n")
             return collected, verify
 
     try:
-        out, verify = _aio.run(_aio.wait_for(_go(), timeout=30))
+        out, verify = _aio.run(_aio.wait_for(_go(), timeout=35))
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"Config push failed: {e}", "commands": sequence}
-    err_lines = [ln for ln in out.splitlines() if ln.strip().startswith("%")]
+    # error detection per platform: IOS/EOS/Brocade prefix errors with '%';
+    # Junos says 'error:'/'syntax error'; SONiC prints 'Error'/'Usage'.
+    low = out.lower()
+    if style == "junos":
+        err_lines = [ln for ln in out.splitlines() if "error" in ln.lower() or "unknown command" in ln.lower()]
+    elif style == "sonic":
+        err_lines = [ln for ln in out.splitlines() if ln.strip().lower().startswith(("error", "usage:")) or "no such" in ln.lower()]
+    else:
+        err_lines = [ln for ln in out.splitlines() if ln.strip().startswith("%")]
     return {"ok": not err_lines, "output": out, "verify": verify,
             "commands": sequence, "errors": err_lines}
 
@@ -345,6 +494,8 @@ def _classify(sysdescr, ip):
         ("arista", ("Arista", "eos")), ("cisco ios-xe", ("Cisco", "ios")),
         ("cisco nx-os", ("Cisco", "nxos_ssh")), ("cisco", ("Cisco", "ios")),
         ("juniper", ("Juniper", "junos")), ("sonic", ("SONiC", "sonic")),
+        ("brocade", ("Brocade", "brocade")), ("foundry", ("Brocade", "brocade")),
+        ("ruckus", ("Brocade", "brocade")), ("ironware", ("Brocade", "brocade")),
         ("freebsd", ("pfSense", "linux")),
     ]
     for key, (vendor, platform) in table:

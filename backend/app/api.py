@@ -123,9 +123,12 @@ class IfConfigIn(BaseModel):
 @router.post("/devices/{device_id}/interfaces/{ifname:path}/preview")
 async def preview_iface(device_id: int, ifname: str, body: IfConfigIn):
     """Return the exact CLI commands that an apply would send — no device contact."""
+    async with SessionLocal() as s:
+        dev = await s.get(Device, device_id)
+        platform = dev.platform if dev else "ios"
     cfg = body.model_dump(exclude_unset=True)
-    body_cmds = drv.build_interface_commands(ifname, cfg)
-    return {"commands": ["configure terminal"] + body_cmds + ["end", "write memory"]}
+    body_cmds = drv.build_interface_commands(ifname, cfg, platform)
+    return {"commands": drv.wrap_commands(body_cmds, platform), "platform": platform}
 
 
 @router.post("/devices/{device_id}/interfaces/{ifname:path}/apply")
