@@ -145,31 +145,51 @@ def snmp_interfaces(ip, community, version="2c"):
     return out
 
 
+def _ssh_probe(ip, port, user, pw):
+    """SSH-based fingerprint using asyncssh (same path as the live terminal,
+    which handles the legacy algorithms older Cisco gear requires). Runs
+    'show version' and classifies the output. Returns a probe dict."""
+    import asyncio as _aio
+    import asyncssh
+
+    LEGACY_KEX = ["diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1",
+                  "diffie-hellman-group14-sha256", "curve25519-sha256",
+                  "ecdh-sha2-nistp256", "diffie-hellman-group16-sha512"]
+    LEGACY_HKEY = ["ssh-rsa", "rsa-sha2-256", "rsa-sha2-512", "ssh-ed25519",
+                   "ecdsa-sha2-nistp256"]
+
+    async def _go():
+        async with asyncssh.connect(ip, port=port, username=user, password=pw,
+                                    known_hosts=None, kex_algs=LEGACY_KEX,
+                                    server_host_key_algs=LEGACY_HKEY,
+                                    connect_timeout=8) as conn:
+            r = await conn.run("show version", check=False, timeout=10)
+            return (r.stdout or "") + (r.stderr or "")
+
+    try:
+        out = _aio.run(_aio.wait_for(_go(), timeout=15))
+    except Exception as e:  # noqa: BLE001
+        return {"reachable": False, "error": f"SSH probe failed: {e}"}
+    if not out.strip():
+        return {"reachable": False, "error": "SSH connected but 'show version' returned nothing."}
+    fp = _classify(out, ip)
+    fp["reachable"] = True
+    return fp
+
+
 def _real_probe(ip, snmp_community, ssh_username, ssh_password):
-    """Try SNMP sysDescr first, then SSH banner, to fingerprint the device."""
+    """Try SNMP sysDescr first, then an SSH 'show version' fingerprint."""
     community = snmp_community or settings.default_snmp_community
     descr = _snmp_sysdescr(ip, community)
     if descr:
         return _classify(descr, ip)
-    # Fall back to an SSH connect + 'show version'-ish banner grab via Netmiko.
-    # Timeouts are essential: without them a stalled SSH negotiation or wrong
-    # credentials hang the probe indefinitely.
-    from netmiko import ConnectHandler
+    # Fall back to SSH (asyncssh — handles legacy Cisco algorithms, with timeouts
+    # so a stalled negotiation can't hang the probe).
     user = ssh_username or settings.default_ssh_username
     pw = ssh_password or settings.default_ssh_password
     if not user:
         return {"reachable": False, "error": "No SSH username provided and no default configured."}
-    try:
-        conn = ConnectHandler(
-            device_type="autodetect", host=ip, username=user, password=pw,
-            timeout=8, auth_timeout=8, banner_timeout=8, conn_timeout=8, fast_cli=True,
-        )
-        platform = conn.autodetect() or "ios"
-        conn.disconnect()
-        return {"vendor": "Unknown", "model": "", "os": "", "platform": platform,
-                "device_type": "switch", "reachable": True}
-    except Exception as e:  # noqa: BLE001
-        return {"reachable": False, "error": f"SSH probe failed: {e}"}
+    return _ssh_probe(ip, 22, user, pw)
 
 
 def _snmp_sysdescr(ip, community, version="2c"):
