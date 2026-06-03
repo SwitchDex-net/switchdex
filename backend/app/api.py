@@ -39,6 +39,20 @@ class DeviceIn(BaseModel):
         return self.name
 
 
+class DeviceUpdate(BaseModel):
+    """Partial update — every field optional, only provided fields are changed.
+    ssh_password is write-only: omit (None) leaves the stored password untouched;
+    pass an empty string to explicitly clear it."""
+    name: str | None = None
+    location: str | None = None
+    protocol: str | None = None
+    ssh_port: int | None = None
+    ssh_username: str | None = None
+    ssh_password: str | None = None
+    snmp_community: str | None = None
+    platform: str | None = None
+
+
 class ProbeIn(BaseModel):
     ip: str
     auth: str = "snmpv2"          # snmpv2 | snmpv3 | ssh
@@ -56,6 +70,10 @@ def _dev_out(d: Device) -> dict:
         "status": d.status, "sshPort": d.ssh_port,
         "source": d.source, "capability": d.capability,
         "controllerId": d.controller_id, "externalId": d.external_id,
+        # Non-secret credential fields the edit form needs. The password itself
+        # is never returned — only whether one is set (write-only).
+        "sshUsername": d.ssh_username, "snmpCommunity": d.snmp_community,
+        "hasSshPassword": bool(d.ssh_password),
     }
 
 
@@ -103,6 +121,28 @@ async def device_interfaces_live(device_id: int):
             return {}
         community = dev.snmp_community or settings.default_snmp_community
         return await asyncio.to_thread(drv.snmp_interfaces, dev.ip, community)
+
+
+@router.patch("/devices/{device_id}")
+async def update_device(device_id: int, body: DeviceUpdate):
+    async with SessionLocal() as s:
+        dev = await s.get(Device, device_id)
+        if not dev:
+            raise HTTPException(404, "Device not found")
+        data = body.model_dump(exclude_unset=True)   # only fields the client sent
+        if "name" in data and data["name"]:
+            dev.name = data["name"]
+            dev.hostname = data["name"]
+        for fld in ("location", "protocol", "ssh_port", "ssh_username",
+                    "snmp_community", "platform"):
+            if fld in data and data[fld] is not None:
+                setattr(dev, fld, data[fld])
+        # password: only touch it if the key was actually sent (write-only)
+        if "ssh_password" in data and data["ssh_password"] is not None:
+            dev.ssh_password = data["ssh_password"]
+        await s.commit()
+        await s.refresh(dev)
+        return _dev_out(dev)
 
 
 @router.delete("/devices/{device_id}")

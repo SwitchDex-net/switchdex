@@ -42,6 +42,7 @@ const api = {
   addDevice: (d) => _req("/devices", { method: "POST", body: d }),
   deleteDevice: (id) => _req(`/devices/${id}`, { method: "DELETE" }),
   deviceInterfaces: (id) => _req(`/devices/${id}/interfaces`),
+  editDevice: (id, patch) => _req(`/devices/${id}`, { method: "PATCH", body: patch }),
   listConfigs: (id) => _req(`/devices/${id}/configs`),
   getConfig: (id, vid) => _req(`/devices/${id}/configs/${vid}`),
   diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${a}&b=${b}`),
@@ -1274,6 +1275,88 @@ function AddDeviceModal({onClose, onAdd}) {
   );
 }
 
+/* ───────────────────────── Edit Device Modal ──────────────────────── */
+function EditDeviceModal({device, onClose, onSaved}) {
+  const [name, setName] = useState(device.name || "");
+  const [location, setLocation] = useState(device.location || "");
+  const [protocol, setProtocol] = useState(device.protocol || "SNMP");
+  const [sshPort, setSshPort] = useState(device.sshPort || 22);
+  const [sshUser, setSshUser] = useState(device.sshUsername || "");
+  const [snmpComm, setSnmpComm] = useState(device.snmpCommunity || "");
+  const [sshPass, setSshPass] = useState("");        // write-only; blank = leave unchanged
+  const [changePw, setChangePw] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  function save() {
+    setErr(""); setBusy(true);
+    const patch = { name, location, protocol, ssh_port: Number(sshPort) || 22,
+                    ssh_username: sshUser, snmp_community: snmpComm };
+    if (changePw) patch.ssh_password = sshPass;   // only send when explicitly changing
+    if (MOCK_MODE) { setTimeout(()=>{ setBusy(false); onSaved({ ...device, name, hostname:name, location, protocol, sshPort:Number(sshPort)||22, sshUsername:sshUser, snmpCommunity:snmpComm, hasSshPassword: changePw ? !!sshPass : device.hasSshPassword }); }, 350); return; }
+    api.editDevice(device.id, patch)
+      .then(updated => { setBusy(false); onSaved(updated); })
+      .catch(e => { setBusy(false); setErr(e.message || "Update failed."); });
+  }
+
+  return (
+    <div className="overlay" onMouseDown={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div className="modal">
+        <div className="modal-hdr">
+          <div>
+            <div className="modal-title">Edit device</div>
+            <div className="modal-sub">{device.ip} · {device.vendor}{device.model?` ${device.model}`:""}</div>
+          </div>
+          <div style={{cursor:"pointer",color:"#8b949e"}} onClick={onClose}>{IC.x}</div>
+        </div>
+        <div className="modal-body">
+          {err && <div style={{background:"#3d1a1a",color:"#f85149",border:"1px solid #5c2626",borderRadius:6,padding:"7px 10px",fontSize:12,marginBottom:12}}>{err}</div>}
+
+          <label className="flabel">Display name</label>
+          <input className="finput" value={name} onChange={e=>setName(e.target.value)} placeholder="device name" autoFocus/>
+
+          <label className="flabel">Location</label>
+          <input className="finput" value={location} onChange={e=>setLocation(e.target.value)} placeholder="e.g. DC1-Rack-A3 / Branch closet"/>
+
+          <label className="flabel">Management protocol</label>
+          <div className="auth-tabs">
+            {["SNMP","SSH"].map(p=>(
+              <button key={p} className={`auth-tab ${protocol===p?"on":""}`} onClick={()=>setProtocol(p)}>{p}</button>
+            ))}
+          </div>
+
+          <div className="frow" style={{marginBottom:12}}>
+            <div><label className="flabel">SNMP community</label><input className="finput" value={snmpComm} onChange={e=>setSnmpComm(e.target.value)} placeholder="public"/></div>
+            <div><label className="flabel">SSH username</label><input className="finput" value={sshUser} onChange={e=>setSshUser(e.target.value)} placeholder="admin"/></div>
+          </div>
+
+          <label className="flabel">SSH password</label>
+          {!changePw ? (
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+              <span style={{fontSize:12,color:"#8b949e"}}>{device.hasSshPassword ? "•••••••• (set)" : "(not set)"}</span>
+              <button className="fbtn" onClick={()=>setChangePw(true)}>{device.hasSshPassword?"Change":"Set password"}</button>
+            </div>
+          ) : (
+            <div style={{marginBottom:12}}>
+              <input className="finput" type="password" value={sshPass} onChange={e=>setSshPass(e.target.value)} placeholder="new SSH password" style={{marginBottom:6}}/>
+              <span style={{fontSize:11,color:"#6e7681",cursor:"pointer"}} onClick={()=>{setChangePw(false);setSshPass("");}}>Cancel password change</span>
+            </div>
+          )}
+
+          <div className="frow">
+            <div><label className="flabel">SSH port</label><input className="finput" value={sshPort} onChange={e=>setSshPort(e.target.value)} style={{marginBottom:0}}/></div>
+            <div/>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="mbtn cancel" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="mbtn go" onClick={save} disabled={busy||!name.trim()}>{busy?"Saving…":"Save changes"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ───────────────────────── Config Archive (device tab) ─────────────── */
 function ConfigArchive({device, archive, onBackup, onRestore}) {
   const entry = archive[device.id] || { versions:[] };
@@ -1501,6 +1584,7 @@ function AppInner({auth, onLogout}) {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
+  const [editId, setEditId] = useState(null);
   const [view, setView] = useState(_init.view);
   const [archive, setArchive] = useState(()=>MOCK_MODE ? seedArchive(INIT_DEVICES) : {});
 
@@ -1675,7 +1759,7 @@ function AppInner({auth, onLogout}) {
                         <td><span className={`sbadge ${d.status}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>{d.status}</span></td>
                         <td>{d.status!=="down"?(<div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:44,height:4,background:"#21262d",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${d.cpu}%`,background:d.cpu>80?"#f85149":d.cpu>60?"#e3b341":"#3fb950",borderRadius:2}}/></div><span className="mono" style={{fontSize:11}}>{d.cpu}%</span></div>):<span className="mono">—</span>}</td>
                         <td><span className="mono" style={{fontSize:11}}>{d.uptime}</span></td>
-                        <td><div className="row-acts"><div className="act" title="Open full page" onClick={e=>{e.stopPropagation();setSelId(d.id);setFullId(d.id);setTab("detail");setSelIface(null);}}>{IC.info}</div><div className="act term" title="SSH Terminal" onClick={e=>{e.stopPropagation();setSelId(d.id);setTab("ssh");setSelIface(null);}}>{IC.terminal}</div><div className="act" title="Remove device" onClick={e=>{e.stopPropagation();removeDevice(d.id);}} style={{color:"#f85149"}}>{IC.x}</div></div></td>
+                        <td><div className="row-acts"><div className="act" title="Open full page" onClick={e=>{e.stopPropagation();setSelId(d.id);setFullId(d.id);setTab("detail");setSelIface(null);}}>{IC.info}</div><div className="act term" title="SSH Terminal" onClick={e=>{e.stopPropagation();setSelId(d.id);setTab("ssh");setSelIface(null);}}>{IC.terminal}</div><div className="act" title="Edit device" onClick={e=>{e.stopPropagation();setEditId(d.id);}}>{IC.edit}</div><div className="act" title="Remove device" onClick={e=>{e.stopPropagation();removeDevice(d.id);}} style={{color:"#f85149"}}>{IC.x}</div></div></td>
                       </tr>
                     ); })}
                   </tbody>
@@ -1696,7 +1780,8 @@ function AppInner({auth, onLogout}) {
                   <div className={`ptab ${tab==="detail"?"active":""}`} onClick={()=>{setTab("detail");}}>{selIface?"Interface":"Details"}</div>
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="configs"?"active":""}`} onClick={()=>setTab("configs")}>Configs</div>}
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="ssh"?"active":""}`} onClick={()=>setTab("ssh")}>Terminal</div>}
-                  <div className="pclose" title="Remove device" onClick={()=>removeDevice(sel.id)} style={{marginLeft:"auto",color:"#f85149"}}>{IC.trash || IC.x}</div>
+                  <div className="pclose" title="Edit device" onClick={()=>setEditId(sel.id)} style={{marginLeft:"auto"}}>{IC.edit}</div>
+                  <div className="pclose" title="Remove device" onClick={()=>removeDevice(sel.id)} style={{color:"#f85149"}}>{IC.trash || IC.x}</div>
                   <div className="pclose" title="Close" onClick={()=>{setSelId(null);setSelIface(null);setFullId(null);}}>{IC.x}</div>
                 </div>
 
@@ -1798,6 +1883,10 @@ function AppInner({auth, onLogout}) {
         </div>
 
         {showAdd && <AddDeviceModal onClose={()=>setShowAdd(false)} onAdd={addDevice}/>}
+        {editId != null && (() => { const ed = devices.find(d=>d.id===editId); return ed ? (
+          <EditDeviceModal device={ed} onClose={()=>setEditId(null)}
+            onSaved={(updated)=>{ setDevices(p=>p.map(d=>d.id===updated.id?{...d,...updated}:d)); setEditId(null); }}/>
+        ) : null; })()}
       </div>
     </>
   );

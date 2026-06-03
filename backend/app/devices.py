@@ -151,18 +151,25 @@ def _real_probe(ip, snmp_community, ssh_username, ssh_password):
     descr = _snmp_sysdescr(ip, community)
     if descr:
         return _classify(descr, ip)
-    # Fall back to an SSH connect + 'show version'-ish banner grab via Netmiko
+    # Fall back to an SSH connect + 'show version'-ish banner grab via Netmiko.
+    # Timeouts are essential: without them a stalled SSH negotiation or wrong
+    # credentials hang the probe indefinitely.
     from netmiko import ConnectHandler
     user = ssh_username or settings.default_ssh_username
     pw = ssh_password or settings.default_ssh_password
+    if not user:
+        return {"reachable": False, "error": "No SSH username provided and no default configured."}
     try:
-        conn = ConnectHandler(device_type="autodetect", host=ip, username=user, password=pw)
+        conn = ConnectHandler(
+            device_type="autodetect", host=ip, username=user, password=pw,
+            timeout=8, auth_timeout=8, banner_timeout=8, conn_timeout=8, fast_cli=True,
+        )
         platform = conn.autodetect() or "ios"
         conn.disconnect()
         return {"vendor": "Unknown", "model": "", "os": "", "platform": platform,
                 "device_type": "switch", "reachable": True}
     except Exception as e:  # noqa: BLE001
-        return {"reachable": False, "error": str(e)}
+        return {"reachable": False, "error": f"SSH probe failed: {e}"}
 
 
 def _snmp_sysdescr(ip, community, version="2c"):
