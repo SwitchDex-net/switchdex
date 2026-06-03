@@ -6,7 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, De
 from pydantic import BaseModel
 from sqlalchemy import select, delete as sa_delete
 
-from .db import SessionLocal, Device, ConfigVersion
+from .db import SessionLocal, Device, ConfigVersion, Controller
 from . import devices as drv
 from . import configstore as store
 from .config import settings
@@ -62,7 +62,7 @@ class ProbeIn(BaseModel):
 
 
 # ───────────────────────── device inventory ────────────────────────────
-def _dev_out(d: Device) -> dict:
+def _dev_out(d: Device, controller_url: str = "") -> dict:
     return {
         "id": d.id, "name": d.name, "hostname": d.hostname, "ip": d.ip,
         "vendor": d.vendor, "model": d.model, "os": d.os, "type": d.device_type,
@@ -70,6 +70,7 @@ def _dev_out(d: Device) -> dict:
         "status": d.status, "sshPort": d.ssh_port,
         "source": d.source, "capability": d.capability,
         "controllerId": d.controller_id, "externalId": d.external_id,
+        "controllerUrl": controller_url,
         # Non-secret credential fields the edit form needs. The password itself
         # is never returned — only whether one is set (write-only).
         "sshUsername": d.ssh_username, "snmpCommunity": d.snmp_community,
@@ -81,7 +82,10 @@ def _dev_out(d: Device) -> dict:
 async def list_devices():
     async with SessionLocal() as s:
         rows = (await s.execute(select(Device))).scalars().all()
-        return [_dev_out(d) for d in rows]
+        # map controller_id -> base_url so read-only devices can deep-link to their controller
+        ctrls = (await s.execute(select(Controller))).scalars().all()
+        url_by_id = {c.id: c.base_url for c in ctrls}
+        return [_dev_out(d, url_by_id.get(d.controller_id, "")) for d in rows]
 
 
 @router.post("/devices/probe")

@@ -1929,7 +1929,15 @@ function AppInner({auth, onLogout}) {
                     )}
 
                     {ro ? (
-                      <div className="ro-banner" style={{justifyContent:"center"}}>{IC.link}<div>Open in the {sel.vendor==="Ubiquiti"?"UniFi":"Omada"} controller to make changes</div></div>
+                      sel.controllerUrl ? (
+                        <a className="ro-banner" href={sel.controllerUrl} target="_blank" rel="noopener noreferrer"
+                           style={{justifyContent:"center",textDecoration:"none",cursor:"pointer",color:"inherit"}}
+                           title={sel.controllerUrl}>
+                          {IC.link}<div>Open in the {sel.vendor==="Ubiquiti"?"UniFi":"Omada"} controller to make changes</div>
+                        </a>
+                      ) : (
+                        <div className="ro-banner" style={{justifyContent:"center"}}>{IC.link}<div>Open in the {sel.vendor==="Ubiquiti"?"UniFi":"Omada"} controller to make changes</div></div>
+                      )
                     ) : (
                       <div style={{display:"flex",gap:8}}>
                         <button className="dbtn" style={{background:"#1f6feb",borderColor:"#388bfd"}} onClick={()=>setTab("configs")}>{IC.archive} Config archive</button>
