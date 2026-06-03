@@ -895,10 +895,13 @@ function isFiber(spd){ return ["10G","25G","40G","100G"].includes(spd); }
 function portClass(i){ if(i.shutdown) return "admin"; if(i.status==="up") return "up"; return "down"; }
 
 function SwitchFaceplate({device, selIface, onSelect}) {
-  const entries = Object.entries(device.interfaces || {});
+  // Faceplate shows physical ports only. Logical interfaces (SVIs, loopbacks,
+  // port-channels) are listed separately in the detail panel.
+  const allEntries = Object.entries(device.interfaces || {});
+  const entries = allEntries.filter(([,i]) => i.kind !== "logical");
   if (entries.length === 0) {
     return <div className="faceplate" style={{padding:"24px",textAlign:"center",color:"#6e7681",fontSize:13}}>
-      No interface data yet for {device.name}.<br/>Interface enumeration runs on the next poll, or trigger a backup to pull live config.
+      No physical interface data yet for {device.name}.<br/>Interface enumeration runs on the next poll, or trigger a backup to pull live config.
     </div>;
   }
   const mgmt = entries.filter(([n])=>isMgmt(n));
@@ -1736,8 +1739,11 @@ function AppInner({auth, onLogout}) {
 
                     <DetailSparklines device={sel} onExpand={()=>setView("telemetry")}/>
 
-                    <div><div className="sec-title"><span>Interfaces ({Object.keys(sel.interfaces).length})</span></div>
-                      {Object.entries(sel.interfaces).map(([n,i])=>(
+                    {(() => {
+                      const all = Object.entries(sel.interfaces || {});
+                      const phys = all.filter(([,i]) => i.kind !== "logical");
+                      const logical = all.filter(([,i]) => i.kind === "logical");
+                      const IfRow = ([n,i]) => (
                         <div className="irow" key={n} onClick={ro?undefined:(()=>setSelIface(n))} style={ro?{cursor:"default"}:undefined}>
                           <span className="led" style={{width:6,height:6,borderRadius:"50%",background:i.shutdown?"#f85149":i.status==="up"?"#3fb950":"#484f58",display:"inline-block",flexShrink:0}}/>
                           <div className="iname">{n}</div>
@@ -1746,8 +1752,18 @@ function AppInner({auth, onLogout}) {
                           {i.vlan && <span className="vtag">vl{i.vlan}</span>}
                           {!ro && <span style={{color:"#484f58"}}>›</span>}
                         </div>
-                      ))}
-                    </div>
+                      );
+                      return <>
+                        <div><div className="sec-title"><span>Physical interfaces ({phys.length})</span></div>
+                          {phys.length ? phys.map(IfRow) : <div style={{fontSize:12,color:"#6e7681",padding:"4px 0"}}>No physical interfaces.</div>}
+                        </div>
+                        {logical.length > 0 && (
+                          <div><div className="sec-title"><span>Logical interfaces ({logical.length})</span></div>
+                            {logical.map(IfRow)}
+                          </div>
+                        )}
+                      </>;
+                    })()}
 
                     {Object.keys(sel.vlans).length>0 && (
                       <div><div className="sec-title">VLANs</div><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{Object.entries(sel.vlans).map(([id,v])=>(<span key={id} className="vtag">{id} {v.name}</span>))}</div></div>

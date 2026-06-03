@@ -98,17 +98,27 @@ def _snmp_walk(ip, community, oid, version="2c"):
 
 def snmp_interfaces(ip, community, version="2c"):
     """Enumerate interfaces from the device's IF-MIB via SNMP.
-    Returns {ifname: {speed, status, desc, mode, vlan, ip, shutdown}}."""
+    Returns {ifname: {speed, status, desc, mode, vlan, ip, shutdown, kind}}.
+    `kind` is "physical" for real ports (faceplate) or "logical" for SVIs,
+    loopbacks, port-channels, tunnels, null, etc."""
     IF_DESCR = "1.3.6.1.2.1.2.2.1.2"      # ifDescr
+    IF_TYPE  = "1.3.6.1.2.1.2.2.1.3"      # ifType (IANAifType)
     IF_OPER  = "1.3.6.1.2.1.2.2.1.8"      # ifOperStatus (1=up,2=down)
     IF_SPEED = "1.3.6.1.2.1.2.2.1.5"      # ifSpeed (bps)
     IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"  # ifAlias (description)
     descr = _snmp_walk(ip, community, IF_DESCR, version)
     if not descr:
         return {}
+    iftype = _snmp_walk(ip, community, IF_TYPE, version)
     oper  = _snmp_walk(ip, community, IF_OPER, version)
     speed = _snmp_walk(ip, community, IF_SPEED, version)
     alias = _snmp_walk(ip, community, IF_ALIAS, version)
+
+    # IANAifType values that are real, physical, panel-worthy ports.
+    PHYSICAL_TYPES = {"6", "117"}   # ethernetCsmacd, gigabitEthernet
+    # Everything else commonly seen on a switch is logical: 53 propVirtual,
+    # 135 l2vlan, 136 l3ipvlan (SVIs), 24 softwareLoopback, 161 ieee8023adLag
+    # (port-channel), 1 other/null, 131 tunnel, 53 vlan, etc.
 
     def fmt_speed(bps):
         try:
@@ -124,11 +134,13 @@ def snmp_interfaces(ip, community, version="2c"):
     out = {}
     for idx, name in descr.items():
         st = oper.get(idx, "2")
+        t = iftype.get(idx, "")
         out[name] = {
             "speed": fmt_speed(speed.get(idx)),
             "status": "up" if st == "1" else "down",
             "desc": alias.get(idx, ""),
             "mode": "access", "vlan": None, "ip": "", "shutdown": st != "1",
+            "kind": "physical" if t in PHYSICAL_TYPES else "logical",
         }
     return out
 
