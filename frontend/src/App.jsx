@@ -32,6 +32,8 @@ async function _req(path, { method = "GET", body, form } = {}) {
 const api = {
   login: async (u, p) => { const d = await _req("/auth/login", { method: "POST", form: { username: u, password: p } }); _setTok(d.access_token); return d; },
   logout: () => _setTok(null),
+  me: () => _req("/auth/me"),
+  changePassword: (oldPw, newPw) => _req("/auth/change-password", { method: "POST", body: { old_password: oldPw, new_password: newPw } }),
   listDevices: () => _req("/devices"),
   probeDevice: (b) => _req("/devices/probe", { method: "POST", body: b }),
   addDevice: (d) => _req("/devices", { method: "POST", body: d }),
@@ -2570,7 +2572,62 @@ function LoginScreen({onLogin}) {
   );
 }
 
-/* ───────────────────────── Auth gate (default export) ──────────────── */
+/* ───────────────────────── Forced password change ─────────────────── */
+function ForcePasswordChange({ auth, onDone, onLogout }) {
+  const [cur, setCur] = useState("");
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  function submit() {
+    setErr("");
+    if (pw.length < 8) { setErr("New password must be at least 8 characters."); return; }
+    if (pw !== pw2) { setErr("New passwords do not match."); return; }
+    if (pw === cur) { setErr("New password must be different from the current one."); return; }
+    setBusy(true);
+    if (!MOCK_MODE) {
+      api.changePassword(cur, pw)
+        .then(() => { setBusy(false); onDone(); })
+        .catch(e => { setBusy(false); setErr(e.message === "Bad Request" ? "Current password is incorrect." : e.message); });
+      return;
+    }
+    setTimeout(() => { setBusy(false); onDone(); }, 450);   // simulated
+  }
+
+  return (
+    <>
+      <style>{css}</style>
+      <div className="login-wrap">
+        <div className="login-card">
+          <div className="login-logo">{IC.layers}</div>
+          <div className="login-title">Switch<span>Dex</span></div>
+          <div className="login-sub">Set a new admin password</div>
+          <div className="login-foot" style={{ marginTop: 10, marginBottom: 4 }}>
+            This is the break-glass <strong>{auth.user.username}</strong> account. For security you must
+            replace the temporary bootstrap password before continuing.
+          </div>
+          {err && <div className="login-err">{err}</div>}
+          <label className="login-label">Current (bootstrap) password</label>
+          <input className="login-input" type="password" value={cur} autoFocus
+            onChange={e=>setCur(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} />
+          <label className="login-label">New password</label>
+          <input className="login-input" type="password" value={pw}
+            onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} />
+          <label className="login-label">Confirm new password</label>
+          <input className="login-input" type="password" value={pw2}
+            onChange={e=>setPw2(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} />
+          <button className="login-btn" onClick={submit} disabled={busy}>{busy?"Updating…":"Set password & continue"}</button>
+          <div className="login-foot">
+            Minimum 8 characters. <span style={{ color: "#58a6ff", cursor: "pointer" }} onClick={onLogout}>Sign out instead</span>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ───────────────────────── Auth gate / root ───────────────────────── */
 export default function App() {
   // Token persists in localStorage (real mode); session state in React.
   const [auth, setAuth] = useState(null);
@@ -2585,5 +2642,6 @@ export default function App() {
   function logout() { if (!MOCK_MODE) api.logout(); setAuth(null); }
 
   if (!auth) return <LoginScreen onLogin={setAuth} />;
+  if (auth.mustChange) return <ForcePasswordChange auth={auth} onLogout={logout} onDone={()=>setAuth(a=>({...a, mustChange:false}))} />;
   return <AppInner auth={auth} onLogout={logout} />;
 }
