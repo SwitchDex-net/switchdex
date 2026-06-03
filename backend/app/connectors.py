@@ -185,8 +185,17 @@ class OmadaConnector:
     def list_devices(self):
         site_id = self._resolve_site_id()
         url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{site_id}/devices"
-        r = self._http.get(url, headers=self._hdr(), timeout=15)
-        r.raise_for_status()
+        r = self._http.get(url, headers=self._hdr(),
+                           params={"page": 1, "pageSize": 100}, timeout=15)
+        if r.status_code != 200:
+            # surface Omada's actual error body (errorCode + msg) instead of a bare 400
+            detail = ""
+            try:
+                j = r.json()
+                detail = f" — Omada errorCode={j.get('errorCode')} msg={j.get('msg')!r}"
+            except Exception:
+                detail = f" — body: {r.text[:300]}"
+            raise RuntimeError(f"Omada device list failed: HTTP {r.status_code} at {url}{detail}")
         body = r.json().get("result", [])
         # result may be a bare list or a paginated {data:[...]}
         rows = body.get("data", body) if isinstance(body, dict) else body
