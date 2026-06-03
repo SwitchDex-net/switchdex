@@ -1155,6 +1155,24 @@ function AddDeviceModal({onClose, onAdd}) {
 
   function startProbe() {
     if(!ip.trim())return; setPhase("probing"); setProbeLog([]);
+    if (!MOCK_MODE) {
+      // Real probe — ask the backend to query the device (SNMP/SSH).
+      addLog(`Initiating discovery of ${ip}...`);
+      addLog(authMode.startsWith("snmp")?`[→] SNMP ${authMode==="snmpv2"?"v2c":"v3"} — querying sysDescr...`:`[→] SSH ${ip} — grabbing banner...`);
+      api.probeDevice({ ip, community: authMode.startsWith("snmp")?community:"",
+                        ssh_username: authMode==="ssh"?sshUser:"", ssh_password: authMode==="ssh"?sshPass:"" })
+        .then(fp => {
+          if (!fp || fp.reachable === false) { addLog(`[✗] No response from ${ip}. Check reachability/credentials.`,"err"); setPhase("error"); return; }
+          addLog(`[✓] sysDescr: "${fp.sysdescr||fp.os||""}"`,"info");
+          addLog(`[✓] Vendor: ${fp.vendor}  Model: ${fp.model||"(unknown)"}`,"ok");
+          addLog(`[✓] OS: ${fp.os||"(unknown)"}`,"ok");
+          const name=`${(fp.vendor||"device").toLowerCase()}-${(ip.split(".").pop()||"00").padStart(2,"0")}`;
+          setDevName(name); setDiscovered({...fp,ip,name,community}); setPhase("discovered");
+        })
+        .catch(e => { addLog(`[✗] Probe failed: ${e.message}`,"err"); setPhase("error"); });
+      return;
+    }
+    // ── simulated probe (demo only) ──
     const fp=fingerprint(ip);
     const steps=[
       [0,()=>addLog(`Initiating discovery of ${ip}...`)],
@@ -1172,7 +1190,8 @@ function AddDeviceModal({onClose, onAdd}) {
   }
   function confirmAdd() {
     const d=discovered;
-    onAdd({ id:Date.now(), name:devName||d.name, ip:d.ip, vendor:d.vendor, model:d.model, os:d.os, type:d.type,
+    onAdd({ id:Date.now(), name:devName||d.name, ip:d.ip, vendor:d.vendor, model:d.model, os:d.os,
+      type:d.device_type||d.type||"switch", platform:d.platform,
       protocol:authMode.startsWith("snmp")?"SNMP":"SSH", status:"up", cpu:Math.floor(Math.random()*25+8), mem:Math.floor(Math.random()*40+20),
       uptime:"0d 0h", location:"Unknown", sshPort:22, interfaces:genSwitchIfaces(d.vendor,24,2),
       vlans:{"1":{name:"default",status:"active"},"100":{name:"USERS",status:"active"},"20":{name:"SERVERS",status:"active"}},
@@ -1186,7 +1205,7 @@ function AddDeviceModal({onClose, onAdd}) {
         <div className="modal-hdr">
           <div>
             <div className="modal-title">Add device manually</div>
-            <div className="modal-sub">{phase==="form"?"Enter device IP and credentials to probe and identify.":phase==="probing"?"Probing — please wait...":"Device discovered."}</div>
+            <div className="modal-sub">{phase==="form"?"Enter device IP and credentials to probe and identify.":phase==="probing"?"Probing — please wait...":phase==="error"?"Discovery failed — check the log below.":"Device discovered."}</div>
           </div>
           <div style={{cursor:"pointer",color:"#8b949e",padding:"0 0 0 12px"}} onClick={onClose}>{IC.x}</div>
         </div>
@@ -1204,7 +1223,7 @@ function AddDeviceModal({onClose, onAdd}) {
             {authMode==="snmpv3" && <><div className="frow" style={{marginBottom:12}}><div><label className="flabel">Username</label><input className="finput" value={snmpUser} onChange={e=>setSnmpUser(e.target.value)} placeholder="netops"/></div><div><label className="flabel">Auth pass</label><input className="finput" type="password" placeholder="••••••••"/></div></div><label className="flabel">Auth / Priv</label><select className="finput"><option>SHA / AES-128</option><option>SHA-256 / AES-256</option></select></>}
             {authMode==="ssh" && <><div className="frow" style={{marginBottom:12}}><div><label className="flabel">Username</label><input className="finput" value={sshUser} onChange={e=>setSshUser(e.target.value)}/></div><div><label className="flabel">Password</label><input className="finput" type="password" placeholder="••••••••"/></div></div></>}
           </>}
-          {(phase==="probing"||phase==="discovered") && <>
+          {(phase==="probing"||phase==="discovered"||phase==="error") && <>
             {phase==="probing" && <div className="prog-bar"><div className="prog-fill" style={{width:"100%",animation:"prog 3.2s linear forwards"}}/></div>}
             <div className="probe-log" ref={logRef}>{probeLog.map((l,i)=><div key={i} className={`pl ${l.t} ${phase==="probing"&&i===probeLog.length-1?"spin":""}`}>{l.m}</div>)}</div>
           </>}
@@ -1224,6 +1243,7 @@ function AddDeviceModal({onClose, onAdd}) {
         <div className="modal-footer">
           <button className="mbtn cancel" onClick={onClose}>Cancel</button>
           {phase==="form" && <button className="mbtn go" onClick={startProbe} disabled={!ip.trim()}>Probe device</button>}
+          {phase==="error" && <button className="mbtn go" onClick={()=>setPhase("form")}>Back / try again</button>}
           {phase==="discovered" && <button className="mbtn add" onClick={confirmAdd}>Add to inventory</button>}
         </div>
       </div>
