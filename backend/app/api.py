@@ -92,6 +92,19 @@ async def add_device(body: DeviceIn):
         return _dev_out(dev)
 
 
+@router.get("/devices/{device_id}/interfaces")
+async def device_interfaces_live(device_id: int):
+    """Enumerate the device's interfaces live (SNMP ifTable in real mode)."""
+    async with SessionLocal() as s:
+        dev = await s.get(Device, device_id)
+        if not dev:
+            raise HTTPException(404, "Device not found")
+        if settings.device_backend == "sim":
+            return {}
+        community = dev.snmp_community or settings.default_snmp_community
+        return await asyncio.to_thread(drv.snmp_interfaces, dev.ip, community)
+
+
 @router.delete("/devices/{device_id}")
 async def delete_device(device_id: int):
     async with SessionLocal() as s:

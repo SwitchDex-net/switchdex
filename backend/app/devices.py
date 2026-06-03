@@ -67,6 +67,72 @@ def _napalm_replace_config(dev, config_text):
             os.unlink(path)
 
 
+def _snmp_walk(ip, community, oid, version="2c"):
+    """snmpwalk an OID subtree -> dict of {index: value}. Index is the trailing
+    number of each returned OID (e.g. ifDescr.3 -> key '3')."""
+    import subprocess
+    out = {}
+    try:
+        r = subprocess.run(
+            ["snmpwalk", "-v", version, "-c", community, "-Oqn", "-t", "2", "-r", "1",
+             f"{ip}:161", oid],
+            capture_output=True, text=True, timeout=20,
+        )
+        if r.returncode != 0:
+            return out
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # "-Oqn" → ".1.3.6.1.2.1.2.2.1.2.3 GigabitEthernet1/0/3"
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            full_oid, val = parts
+            idx = full_oid.rstrip(".").split(".")[-1]
+            out[idx] = val.strip().strip('"')
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
+def snmp_interfaces(ip, community, version="2c"):
+    """Enumerate interfaces from the device's IF-MIB via SNMP.
+    Returns {ifname: {speed, status, desc, mode, vlan, ip, shutdown}}."""
+    IF_DESCR = "1.3.6.1.2.1.2.2.1.2"      # ifDescr
+    IF_OPER  = "1.3.6.1.2.1.2.2.1.8"      # ifOperStatus (1=up,2=down)
+    IF_SPEED = "1.3.6.1.2.1.2.2.1.5"      # ifSpeed (bps)
+    IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"  # ifAlias (description)
+    descr = _snmp_walk(ip, community, IF_DESCR, version)
+    if not descr:
+        return {}
+    oper  = _snmp_walk(ip, community, IF_OPER, version)
+    speed = _snmp_walk(ip, community, IF_SPEED, version)
+    alias = _snmp_walk(ip, community, IF_ALIAS, version)
+
+    def fmt_speed(bps):
+        try:
+            n = int(bps)
+        except (TypeError, ValueError):
+            return "—"
+        for unit, div in (("100G", 100e9), ("40G", 40e9), ("25G", 25e9),
+                          ("10G", 10e9), ("1G", 1e9), ("100M", 100e6), ("10M", 10e6)):
+            if n >= div:
+                return unit
+        return f"{n//1_000_000}M" if n else "—"
+
+    out = {}
+    for idx, name in descr.items():
+        st = oper.get(idx, "2")
+        out[name] = {
+            "speed": fmt_speed(speed.get(idx)),
+            "status": "up" if st == "1" else "down",
+            "desc": alias.get(idx, ""),
+            "mode": "access", "vlan": None, "ip": "", "shutdown": st != "1",
+        }
+    return out
+
+
 def _real_probe(ip, snmp_community, ssh_username, ssh_password):
     """Try SNMP sysDescr first, then SSH banner, to fingerprint the device."""
     community = snmp_community or settings.default_snmp_community

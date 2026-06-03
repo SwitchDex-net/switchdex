@@ -41,6 +41,7 @@ const api = {
   probeDevice: (b) => _req("/devices/probe", { method: "POST", body: b }),
   addDevice: (d) => _req("/devices", { method: "POST", body: d }),
   deleteDevice: (id) => _req(`/devices/${id}`, { method: "DELETE" }),
+  deviceInterfaces: (id) => _req(`/devices/${id}/interfaces`),
   listConfigs: (id) => _req(`/devices/${id}/configs`),
   getConfig: (id, vid) => _req(`/devices/${id}/configs/${vid}`),
   diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${a}&b=${b}`),
@@ -162,6 +163,10 @@ tbody tr:hover .row-acts{opacity:1;}
 .act.term:hover{background:#1a3a3e;color:#39d353;border-color:#39d353;}
 .rpanel{width:560px;border-left:1px solid #21262d;display:flex;flex-direction:column;background:#010409;flex-shrink:0;}
 .rpanel.hidden{width:0;overflow:hidden;border:none;}
+.content.full .left-pane{display:none;}
+.content.full .rpanel{width:100%;border-left:none;}
+.content.full .rpanel.hidden{width:100%;}
+.pback:hover{text-decoration:underline;}
 .ptabs{display:flex;border-bottom:1px solid #21262d;flex-shrink:0;align-items:center;}
 .ptab{padding:9px 14px;font-size:12px;font-weight:500;color:#8b949e;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s;}
 .ptab.active{color:#58a6ff;border-bottom-color:#58a6ff;}
@@ -1195,12 +1200,21 @@ function AddDeviceModal({onClose, onAdd}) {
   }
   function confirmAdd() {
     const d=discovered;
-    onAdd({ id:Date.now(), name:devName||d.name, ip:d.ip, vendor:d.vendor, model:d.model, os:d.os,
+    const base={ id:Date.now(), name:devName||d.name, ip:d.ip, vendor:d.vendor, model:d.model, os:d.os,
       type:d.device_type||d.type||"switch", platform:d.platform,
-      protocol:authMode.startsWith("snmp")?"SNMP":"SSH", status:"up", cpu:Math.floor(Math.random()*25+8), mem:Math.floor(Math.random()*40+20),
-      uptime:"0d 0h", location:"Unknown", sshPort:22, interfaces:genSwitchIfaces(d.vendor,24,2),
-      vlans:{"1":{name:"default",status:"active"},"100":{name:"USERS",status:"active"},"20":{name:"SERVERS",status:"active"}},
-      bgpPeers:[], ospfNets:[], staticRoutes:[], aclDefs:{}, snmpCommunity:authMode.startsWith("snmp")?community:"public", ntpServers:[], hostname:devName||d.name });
+      protocol:authMode.startsWith("snmp")?"SNMP":"SSH", status:"up",
+      uptime:"0d 0h", location:"Unknown", sshPort:22, hostname:devName||d.name,
+      snmpCommunity:authMode.startsWith("snmp")?community:"public", ntpServers:[],
+      bgpPeers:[], ospfNets:[], staticRoutes:[], aclDefs:[] };
+    if (MOCK_MODE) {
+      // demo only: synthesize a believable faceplate
+      onAdd({ ...base, cpu:Math.floor(Math.random()*25+8), mem:Math.floor(Math.random()*40+20),
+        interfaces:genSwitchIfaces(d.vendor,24,2),
+        vlans:{"1":{name:"default",status:"active"},"100":{name:"USERS",status:"active"},"20":{name:"SERVERS",status:"active"}} });
+    } else {
+      // real device: no fabricated data — interfaces/VLANs come from the backend poll
+      onAdd({ ...base, cpu:0, mem:0, interfaces:{}, vlans:{} });
+    }
     onClose();
   }
 
@@ -1471,13 +1485,14 @@ function AppInner({auth, onLogout}) {
   // Parse the URL hash into { view, selId }. Forms: #/inventory, #/devices/5
   function parseHash(){
     const h = (window.location.hash || "").replace(/^#\/?/, "");
-    const [seg, id] = h.split("/");
-    if (seg === "devices") return { view: "inventory", selId: id ? Number(id) : null };
-    if (VIEWS.includes(seg)) return { view: seg, selId: null };
-    return { view: "inventory", selId: null };
+    const [seg, id, mode] = h.split("/");
+    if (seg === "devices") return { view: "inventory", selId: id ? Number(id) : null, full: mode === "full" };
+    if (VIEWS.includes(seg)) return { view: seg, selId: null, full: false };
+    return { view: "inventory", selId: null, full: false };
   }
   const _init = parseHash();
   const [selId, setSelId] = useState(_init.selId);
+  const [fullId, setFullId] = useState(_init.full ? _init.selId : null);
   const [tab, setTab] = useState("detail");
   const [selIface, setSelIface] = useState(null);
   const [search, setSearch] = useState("");
@@ -1488,7 +1503,7 @@ function AppInner({auth, onLogout}) {
 
   // URL → state: respond to back/forward and manual hash edits.
   useEffect(() => {
-    const onNav = () => { const p = parseHash(); setView(p.view); setSelId(p.selId); };
+    const onNav = () => { const p = parseHash(); setView(p.view); setSelId(p.selId); setFullId(p.full ? p.selId : null); };
     window.addEventListener("hashchange", onNav);
     window.addEventListener("popstate", onNav);
     return () => { window.removeEventListener("hashchange", onNav); window.removeEventListener("popstate", onNav); };
@@ -1496,11 +1511,14 @@ function AppInner({auth, onLogout}) {
 
   // state → URL: keep the address bar in sync (so back/forward + refresh work).
   useEffect(() => {
-    const want = (view === "inventory" && selId != null) ? `#/devices/${selId}` : `#/${view}`;
+    let want;
+    if (fullId != null) want = `#/devices/${fullId}/full`;
+    else if (view === "inventory" && selId != null) want = `#/devices/${selId}`;
+    else want = `#/${view}`;
     if (window.location.hash !== want) {
       window.history.pushState(null, "", want);
     }
-  }, [view, selId]);
+  }, [view, selId, fullId]);
 
 
   // Real mode: load inventory from the backend on mount.
@@ -1514,6 +1532,19 @@ function AppInner({auth, onLogout}) {
   }, []);
 
   const sel = devices.find(d=>d.id===selId);
+
+  // Real mode: pull live interfaces from the device when its detail opens.
+  useEffect(() => {
+    if (MOCK_MODE || !sel) return;
+    if (sel.interfaces && Object.keys(sel.interfaces).length) return;  // already have them
+    let alive = true;
+    api.deviceInterfaces(sel.id)
+      .then(ifs => { if (alive && ifs && Object.keys(ifs).length) {
+        setDevices(p=>p.map(d=>d.id===sel.id?{...d, interfaces:ifs}:d));
+      }})
+      .catch(()=>{});
+    return () => { alive = false; };
+  }, [selId]);
   const filtered = devices.filter(d=>{
     const s=search.toLowerCase();
     return (d.name.toLowerCase().includes(s)||d.ip.includes(s)||d.vendor.toLowerCase().includes(s)||d.model.toLowerCase().includes(s))&&(filterStatus==="all"||d.status===filterStatus);
@@ -1621,7 +1652,7 @@ function AppInner({auth, onLogout}) {
           ) : view==="configmgmt" ? (
             <FleetConfigView devices={devices} archive={archive} onBackupAll={backupAll} onOpenDevice={openDeviceConfigs}/>
           ) : (
-          <div className="content">
+          <div className={`content ${fullId!=null?"full":""}`}>
             <div className="left-pane">
               <div className="toolbar">
                 <div className="search-wrap">{IC.search}<input className="search-input" placeholder="Search name, IP, vendor, model…" value={search} onChange={e=>setSearch(e.target.value)}/></div>
@@ -1641,7 +1672,7 @@ function AppInner({auth, onLogout}) {
                         <td><span className={`sbadge ${d.status}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>{d.status}</span></td>
                         <td>{d.status!=="down"?(<div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:44,height:4,background:"#21262d",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${d.cpu}%`,background:d.cpu>80?"#f85149":d.cpu>60?"#e3b341":"#3fb950",borderRadius:2}}/></div><span className="mono" style={{fontSize:11}}>{d.cpu}%</span></div>):<span className="mono">—</span>}</td>
                         <td><span className="mono" style={{fontSize:11}}>{d.uptime}</span></td>
-                        <td><div className="row-acts"><div className="act" title="Details" onClick={e=>{e.stopPropagation();pickDevice(d.id);}}>{IC.info}</div><div className="act term" title="SSH Terminal" onClick={e=>{e.stopPropagation();setSelId(d.id);setTab("ssh");setSelIface(null);}}>{IC.terminal}</div><div className="act" title="Remove device" onClick={e=>{e.stopPropagation();removeDevice(d.id);}} style={{color:"#f85149"}}>{IC.x}</div></div></td>
+                        <td><div className="row-acts"><div className="act" title="Open full page" onClick={e=>{e.stopPropagation();setSelId(d.id);setFullId(d.id);setTab("detail");setSelIface(null);}}>{IC.info}</div><div className="act term" title="SSH Terminal" onClick={e=>{e.stopPropagation();setSelId(d.id);setTab("ssh");setSelIface(null);}}>{IC.terminal}</div><div className="act" title="Remove device" onClick={e=>{e.stopPropagation();removeDevice(d.id);}} style={{color:"#f85149"}}>{IC.x}</div></div></td>
                       </tr>
                     ); })}
                   </tbody>
@@ -1650,13 +1681,20 @@ function AppInner({auth, onLogout}) {
             </div>
 
             <div className={`rpanel ${!sel?"hidden":""}`}>
+              {!sel && fullId!=null && (
+                <div className="ptabs">
+                  <div className="pback" onClick={()=>{setFullId(null);}} style={{cursor:"pointer",fontSize:13,color:"#58a6ff"}}>‹ Back to inventory</div>
+                  <div style={{padding:"0 12px",color:"#8b949e",fontSize:13}}>Device not found.</div>
+                </div>
+              )}
               {sel && <>
                 <div className="ptabs">
+                  {fullId!=null && <div className="pback" title="Back to inventory" onClick={()=>{setFullId(null);}} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:4,fontSize:13,color:"#58a6ff",marginRight:12}}>‹ Back</div>}
                   <div className={`ptab ${tab==="detail"?"active":""}`} onClick={()=>{setTab("detail");}}>{selIface?"Interface":"Details"}</div>
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="configs"?"active":""}`} onClick={()=>setTab("configs")}>Configs</div>}
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="ssh"?"active":""}`} onClick={()=>setTab("ssh")}>Terminal</div>}
                   <div className="pclose" title="Remove device" onClick={()=>removeDevice(sel.id)} style={{marginLeft:"auto",color:"#f85149"}}>{IC.trash || IC.x}</div>
-                  <div className="pclose" title="Close" onClick={()=>{setSelId(null);setSelIface(null);}}>{IC.x}</div>
+                  <div className="pclose" title="Close" onClick={()=>{setSelId(null);setSelIface(null);setFullId(null);}}>{IC.x}</div>
                 </div>
 
                 {tab==="detail" && !selIface && (() => { const ro = sel.capability==="readonly"; return (
