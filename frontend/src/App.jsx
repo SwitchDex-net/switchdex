@@ -2584,26 +2584,52 @@ const SEED_CONTROLLERS = [
 ];
 
 function IntegrationsView({auth}) {
-  const [controllers, setControllers] = useState(SEED_CONTROLLERS);
+  const [controllers, setControllers] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name:"", kind:"unifi", base_url:"", site:"default",
     username:"", password:"", client_id:"", client_secret:"", controller_ident:"" });
   const [testResult, setTestResult] = useState(null);
+  const [busy, setBusy] = useState(false);
   const isAdmin = auth.user.role === "admin";
 
+  function load() {
+    if (MOCK_MODE) { setControllers(SEED_CONTROLLERS); setLoading(false); return; }
+    api.listControllers().then(cs => { setControllers(cs||[]); setLoading(false); })
+      .catch(() => setLoading(false));
+  }
+  useEffect(() => { load(); }, []);
+
   function testConn() {
-    setTestResult(form.base_url
-      ? { ok:true, msg:`Reached ${form.kind} controller — devices visible (simulated)` }
-      : { ok:false, msg:"Enter the controller URL first" });
+    if (!form.base_url) { setTestResult({ ok:false, msg:"Enter the controller URL first" }); return; }
+    if (MOCK_MODE) { setTestResult({ ok:true, msg:`Reached ${form.kind} controller — devices visible (simulated)` }); return; }
+    setBusy(true); setTestResult(null);
+    api.testController(form)
+      .then(r => { setBusy(false); setTestResult({ ok:r.ok, msg:r.message || (r.ok?"Connection OK":"Connection failed") }); })
+      .catch(e => { setBusy(false); setTestResult({ ok:false, msg:e.message }); });
   }
   function save() {
     if (!form.name || !form.base_url) return;
-    setControllers(c => [...c, { id:Date.now(), ...form, enabled:true, last_status:"ok",
-      device_count: form.kind==="unifi"?3:2, poll_interval:300 }]);
-    setAdding(false); setTestResult(null);
-    setForm({ name:"", kind:"unifi", base_url:"", site:"default", username:"", password:"", client_id:"", client_secret:"", controller_ident:"" });
+    if (MOCK_MODE) {
+      setControllers(c => [...c, { id:Date.now(), ...form, enabled:true, last_status:"ok", device_count: form.kind==="unifi"?3:2, poll_interval:300 }]);
+      setAdding(false); setTestResult(null); resetForm(); return;
+    }
+    setBusy(true);
+    api.addController(form)
+      .then(() => { setBusy(false); setAdding(false); setTestResult(null); resetForm(); load(); })
+      .catch(e => { setBusy(false); setTestResult({ ok:false, msg:"Save failed: "+e.message }); });
   }
-  function del(id){ setControllers(c=>c.filter(x=>x.id!==id)); }
+  function del(id){
+    if (MOCK_MODE) { setControllers(c=>c.filter(x=>x.id!==id)); return; }
+    api.deleteController(id).then(load).catch(e=>setTestResult({ok:false,msg:"Delete failed: "+e.message}));
+  }
+  function sync(id){
+    if (MOCK_MODE) { setTestResult({ok:true,msg:"Re-synced (simulated)"}); return; }
+    setTestResult({ok:true,msg:"Syncing…"});
+    api.syncController(id).then(r=>{ setTestResult({ok:true,msg:`Synced — ${r.device_count ?? "?"} devices`}); load(); })
+      .catch(e=>setTestResult({ok:false,msg:"Sync failed: "+e.message}));
+  }
+  function resetForm(){ setForm({ name:"", kind:"unifi", base_url:"", site:"default", username:"", password:"", client_id:"", client_secret:"", controller_ident:"" }); }
 
   return (
     <div className="settings-wrap">
@@ -2624,7 +2650,7 @@ function IntegrationsView({auth}) {
               <div className="u-name">{c.name}<div style={{fontSize:11,color:"#8b949e",fontWeight:400,fontFamily:"IBM Plex Mono,monospace"}}>{c.base_url} · site {c.site}</div></div>
               <span className="metric-label" style={{margin:0}}>{c.device_count} devices</span>
               <span className={`bk-status ${c.last_status==="ok"?"ok":"failed"}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor"}}/>{c.last_status==="ok"?"synced":"error"}</span>
-              {isAdmin && <div className="va" title="Sync now" onClick={()=>setTestResult({ok:true,msg:`Re-synced ${c.name} (simulated)`})} style={{cursor:"pointer"}}>{IC.refresh}</div>}
+              {isAdmin && <div className="va" title="Sync now" onClick={()=>sync(c.id)} style={{cursor:"pointer"}}>{IC.refresh}</div>}
               {isAdmin && <div className="va" title="Remove" onClick={()=>del(c.id)} style={{cursor:"pointer"}}>{IC.x}</div>}
             </div>
           ))}
