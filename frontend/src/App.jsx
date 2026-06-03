@@ -2968,6 +2968,19 @@ class ErrorBoundary extends React.Component {
 export default function App() {
   // Token persists in localStorage (real mode); session state in React.
   const [auth, setAuth] = useState(null);
+  const [booting, setBooting] = useState(!MOCK_MODE);
+
+  // On load, if we have a stored token, restore the session instead of
+  // bouncing the user to the login screen on every refresh.
+  useEffect(() => {
+    if (MOCK_MODE) { setBooting(false); return; }
+    const tok = _loadTok();
+    if (!tok) { setBooting(false); return; }
+    api.me()
+      .then(user => { setAuth({ user, mustChange: false }); })
+      .catch(() => { _setTok(null); })   // token invalid/expired → fall through to login
+      .finally(() => setBooting(false));
+  }, []);
 
   // Force logout if the backend rejects our token (expired/invalid).
   useEffect(() => {
@@ -2978,6 +2991,11 @@ export default function App() {
 
   function logout() { if (!MOCK_MODE) api.logout(); setAuth(null); }
 
+  if (booting) return (
+    <div style={{height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0d1117",color:"#8b949e",fontFamily:"'IBM Plex Sans',sans-serif",fontSize:14}}>
+      <style>{css}</style>Restoring session…
+    </div>
+  );
   if (!auth) return <LoginScreen onLogin={setAuth} />;
   if (auth.mustChange) return <ForcePasswordChange auth={auth} onLogout={logout} onDone={()=>setAuth(a=>({...a, mustChange:false}))} />;
   return <ErrorBoundary><AppInner auth={auth} onLogout={logout} /></ErrorBoundary>;
