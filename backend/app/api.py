@@ -253,14 +253,32 @@ async def ssh_ws(ws: WebSocket, device_id: int, token: str = ""):
     import asyncssh
     user = dev.ssh_username or settings.default_ssh_username
     pw = dev.ssh_password or settings.default_ssh_password
+    # Older Cisco gear (e.g. Catalyst IOS-XE) only offers legacy SSH algorithms.
+    # Allow them explicitly so the negotiation succeeds.
+    LEGACY_KEX = ["diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1",
+                  "diffie-hellman-group14-sha256", "curve25519-sha256",
+                  "ecdh-sha2-nistp256", "diffie-hellman-group16-sha512"]
+    LEGACY_HKEY = ["ssh-rsa", "rsa-sha2-256", "rsa-sha2-512", "ssh-ed25519",
+                   "ecdsa-sha2-nistp256"]
     try:
         async with asyncssh.connect(dev.ip, port=dev.ssh_port, username=user,
-                                    password=pw, known_hosts=None) as conn:
-            proc = await conn.create_process(term_type="xterm", encoding="utf-8")
+                                    password=pw, known_hosts=None,
+                                    kex_algs=LEGACY_KEX, server_host_key_algs=LEGACY_HKEY) as conn:
+            # request a generous PTY; term_type vt100 is widely compatible
+            proc = await conn.create_process(term_type="vt100", encoding="utf-8",
+                                             term_size=(200, 50))
             await ws.send_text(f"# Connected to {dev.hostname} ({dev.ip})\r\n")
+            # Disable the pager so 'show run' etc. don't stall on --More--.
+            # Harmless on non-Cisco; the device just reports an unknown command.
+            proc.stdin.write("terminal length 0\n")
 
             async def pump_out():
-                async for data in proc.stdout:
+                # Read by chunks, NOT line-by-line: pager prompts and partial
+                # output have no trailing newline and must stream immediately.
+                while not proc.stdout.at_eof():
+                    data = await proc.stdout.read(4096)
+                    if not data:
+                        break
                     await ws.send_text(data)
 
             out_task = asyncio.create_task(pump_out())
