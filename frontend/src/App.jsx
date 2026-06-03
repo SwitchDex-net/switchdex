@@ -1101,7 +1101,7 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
       {pending && (
         <div style={{background:"#0d1117",border:"1px solid #d29922",borderRadius:8,padding:"12px 14px",marginTop:12}}>
           <div style={{fontSize:12,fontWeight:600,color:"#e3b341",marginBottom:8}}>Review commands to send to {device.name} ({device.ip})</div>
-          <pre style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:"#cdd9e5",background:"#010409",padding:"8px 10px",borderRadius:6,overflow:"auto",margin:0,whiteSpace:"pre-wrap"}}>{pending.commands.join("\n")}</pre>
+          <pre style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:"#cdd9e5",background:"#010409",padding:"8px 10px",borderRadius:6,overflow:"auto",margin:0,whiteSpace:"pre-wrap"}}>{Array.isArray(pending.commands)?pending.commands.join("\n"):String(pending.commands||"")}</pre>
           <div style={{display:"flex",gap:8,marginTop:10}}>
             <button className="ed-btn reset" onClick={()=>setPending(null)} disabled={busy}>Cancel</button>
             <button className="ed-btn apply" onClick={confirmApply} disabled={busy}>{busy?"Sending…":"Confirm & send to device"}</button>

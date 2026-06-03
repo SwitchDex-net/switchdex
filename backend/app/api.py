@@ -124,7 +124,8 @@ class IfConfigIn(BaseModel):
 async def preview_iface(device_id: int, ifname: str, body: IfConfigIn):
     """Return the exact CLI commands that an apply would send — no device contact."""
     cfg = body.model_dump(exclude_unset=True)
-    return {"commands": drv.preview_interface_commands(ifname, cfg)}
+    body_cmds = drv.build_interface_commands(ifname, cfg)
+    return {"commands": ["configure terminal"] + body_cmds + ["end", "write memory"]}
 
 
 @router.post("/devices/{device_id}/interfaces/{ifname:path}/apply")
