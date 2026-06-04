@@ -313,22 +313,70 @@ def snmp_metrics(ip, community, version="2c"):
         cpu = _avg_walk("1.3.6.1.4.1.9.9.109.1.1.1.1.5")  # cpmCPUTotal5min (older)
     if cpu is None:
         cpu = _avg_walk("1.3.6.1.2.1.25.3.3.1.2")         # hrProcessorLoad (generic)
+    if cpu is None:
+        # UCD-SNMP ssCpuIdle (net-snmp on BSD/Linux, e.g. OPNsense): cpu% = 100 - idle
+        idle = _snmp_get(ip, community, "1.3.6.1.4.1.2021.11.11.0", version)
+        try:
+            if idle is not None:
+                cpu = max(0.0, 100.0 - float(str(idle).split(":")[-1].strip()))
+        except (TypeError, ValueError):
+            cpu = None
     if cpu is not None:
         out["cpu"] = round(cpu, 1)
         out["reachable"] = True
 
-    # ── memory: Cisco ciscoMemoryPool used/free -> %, then hrStorage fallback ──
+    # ── memory: try Cisco ciscoMemoryPool, then UCD-SNMP (BSD/Linux, e.g.
+    # OPNsense/pfSense), then HOST-RESOURCES hrStorage RAM. First that yields a
+    # sane percentage wins. ──
+    def _set_mem(pct):
+        if pct is not None and 0 <= pct <= 100:
+            out["mem"] = round(pct, 1)
+            out["reachable"] = True
+            return True
+        return False
+
+    mem_done = False
+    # 1) Cisco ciscoMemoryPool used/free
     used = _snmp_get(ip, community, "1.3.6.1.4.1.9.9.48.1.1.1.5.1", version)
     free = _snmp_get(ip, community, "1.3.6.1.4.1.9.9.48.1.1.1.6.1", version)
     try:
         if used is not None and free is not None:
             u, f = float(used), float(free)
-            total = u + f
-            if total > 0:
-                out["mem"] = round(u / total * 100.0, 1)
-                out["reachable"] = True
+            if u + f > 0:
+                mem_done = _set_mem(u / (u + f) * 100.0)
     except (TypeError, ValueError):
         pass
+
+    # 2) UCD-SNMP-MIB (net-snmp on BSD/Linux): memTotalReal / memAvailReal (KB)
+    if not mem_done:
+        total = _snmp_get(ip, community, "1.3.6.1.4.1.2021.4.5.0", version)   # memTotalReal
+        avail = _snmp_get(ip, community, "1.3.6.1.4.1.2021.4.6.0", version)   # memAvailReal
+        try:
+            if total is not None and avail is not None:
+                t, a = float(total), float(avail)
+                if t > 0:
+                    mem_done = _set_mem((t - a) / t * 100.0)
+        except (TypeError, ValueError):
+            pass
+
+    # 3) HOST-RESOURCES-MIB hrStorage: find the RAM row (hrStorageType ram) and
+    # compute used/size. Works on most SNMP agents incl. OPNsense/pfSense.
+    if not mem_done:
+        try:
+            stype = _snmp_walk(ip, community, "1.3.6.1.2.1.25.2.3.1.2", version)  # hrStorageType
+            ssize = _snmp_walk(ip, community, "1.3.6.1.2.1.25.2.3.1.5", version)  # hrStorageSize
+            sused = _snmp_walk(ip, community, "1.3.6.1.2.1.25.2.3.1.6", version)  # hrStorageUsed
+            # RAM type OID ends in .2 (hrStorageRam)
+            for idx, t in stype.items():
+                if str(t).strip().endswith("2") or "25.2.1.2" in str(t):
+                    sz = float(ssize.get(idx, 0) or 0)
+                    us = float(sused.get(idx, 0) or 0)
+                    if sz > 0:
+                        if _set_mem(us / sz * 100.0):
+                            mem_done = True
+                            break
+        except Exception:  # noqa: BLE001
+            pass
 
     return out
 

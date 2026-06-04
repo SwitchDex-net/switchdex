@@ -51,6 +51,8 @@ class DeviceUpdate(BaseModel):
     ssh_password: str | None = None
     snmp_community: str | None = None
     platform: str | None = None
+    backup_enabled: bool | None = None
+    backup_interval_hours: int | None = None
 
 
 class ProbeIn(BaseModel):
@@ -75,6 +77,8 @@ def _dev_out(d: Device, controller_url: str = "") -> dict:
         # is never returned — only whether one is set (write-only).
         "sshUsername": d.ssh_username, "snmpCommunity": d.snmp_community,
         "hasSshPassword": bool(d.ssh_password),
+        "backupEnabled": d.backup_enabled, "backupIntervalHours": d.backup_interval_hours,
+        "lastBackupAt": d.last_backup_at.isoformat() + "Z" if d.last_backup_at else None,
     }
 
 
@@ -181,7 +185,7 @@ async def update_device(device_id: int, body: DeviceUpdate):
             dev.name = data["name"]
             dev.hostname = data["name"]
         for fld in ("location", "protocol", "ssh_port", "ssh_username",
-                    "snmp_community", "platform"):
+                    "snmp_community", "platform", "backup_enabled", "backup_interval_hours"):
             if fld in data and data[fld] is not None:
                 setattr(dev, fld, data[fld])
         # password: only touch it if the key was actually sent (write-only)
@@ -267,10 +271,22 @@ async def restore(device_id: int, version_id: int):
 
 @router.post("/backup-all")
 async def backup_all():
+    """Back up only directly-managed devices (read-only/controller devices have
+    no SSH config to pull). Per-device errors are isolated so one unreachable
+    host doesn't sink the whole run."""
     async with SessionLocal() as s:
-        ids = (await s.execute(select(Device.id))).scalars().all()
-    results = [await store.backup_device(i, trigger="scheduled", user="api") for i in ids]
-    return {"count": len(results), "changed": sum(1 for r in results if r.get("changed"))}
+        ids = (await s.execute(
+            select(Device.id).where(Device.capability == "manage"))).scalars().all()
+    results = []
+    for i in ids:
+        try:
+            results.append(await store.backup_device(i, trigger="scheduled", user="api"))
+        except Exception as e:  # noqa: BLE001
+            results.append({"ok": False, "device_id": i, "error": str(e)})
+    return {"count": len(results),
+            "changed": sum(1 for r in results if r.get("changed")),
+            "failed": sum(1 for r in results if not r.get("ok")),
+            "results": results}
 
 
 # ───────────────────────── WebSocket SSH proxy ─────────────────────────

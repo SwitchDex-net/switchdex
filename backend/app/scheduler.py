@@ -19,11 +19,19 @@ log = logging.getLogger("scheduler")
 
 
 async def backup_fleet():
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
     async with SessionLocal() as s:
-        # only manageable (open-protocol) devices get config backups
-        ids = (await s.execute(
-            select(Device.id).where(Device.capability == "manage")
+        # only manageable devices with archiving enabled, whose interval has elapsed
+        devs = (await s.execute(
+            select(Device).where(Device.capability == "manage",
+                                 Device.backup_enabled == True)  # noqa: E712
         )).scalars().all()
+        due = []
+        for d in devs:
+            interval = max(1, d.backup_interval_hours or 24)
+            if d.last_backup_at is None or (now - d.last_backup_at).total_seconds() >= interval * 3600:
+                due.append(d.id)
 
     sem = asyncio.Semaphore(settings.backup_concurrency)
     changed = 0
@@ -35,10 +43,16 @@ async def backup_fleet():
             if res.get("changed"):
                 changed += 1
                 log.info("device %s config changed -> new version %s", device_id, res.get("hash"))
+            # stamp last_backup_at regardless of changed, so the interval advances
+            async with SessionLocal() as s2:
+                d2 = await s2.get(Device, device_id)
+                if d2:
+                    d2.last_backup_at = _dt.datetime.utcnow()
+                    await s2.commit()
 
-    await asyncio.gather(*(one(i) for i in ids))
-    log.info("fleet backup complete: %d devices, %d changed (concurrency=%d)",
-             len(ids), changed, settings.backup_concurrency)
+    await asyncio.gather(*(one(i) for i in due))
+    log.info("fleet backup complete: %d due of %d enabled, %d changed (concurrency=%d)",
+             len(due), len(devs), changed, settings.backup_concurrency)
 
 
 async def discover_neighbors():
@@ -90,7 +104,7 @@ async def main():
     await init_db()
     await alert_engine.seed_default_rules()
     sched = AsyncIOScheduler()
-    sched.add_job(backup_fleet, CronTrigger(hour=settings.backup_hour, minute=settings.backup_minute))
+    sched.add_job(backup_fleet, "interval", hours=1)
     # poll closed-ecosystem controllers every 5 minutes for fresh read-only telemetry
     sched.add_job(poll_controllers, "interval", minutes=5)
     # evaluate alert rules every 60 seconds

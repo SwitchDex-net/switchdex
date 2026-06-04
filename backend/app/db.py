@@ -49,6 +49,10 @@ class Device(Base):
     neighbors_json: Mapped[str] = mapped_column(Text, default="")
     # logical role used for layered topology layout: core | distribution | access | edge
     role: Mapped[str] = mapped_column(String(16), default="access")
+    # per-device config-archive settings
+    backup_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    backup_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
+    last_backup_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     versions: Mapped[list["ConfigVersion"]] = relationship(

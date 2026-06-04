@@ -82,14 +82,6 @@ const api = {
   updateChannel: (id, b) => _req(`/alerts/channels/${id}`, { method: "PUT", body: b }),
   deleteChannel: (id) => _req(`/alerts/channels/${id}`, { method: "DELETE" }),
   testChannel: (b) => _req("/alerts/channels/test", { method: "POST", body: b }),
-  listRules: () => _req("/alerts/rules"),
-  createRule: (r) => _req("/alerts/rules", { method: "POST", body: r }),
-  updateRule: (id, r) => _req(`/alerts/rules/${id}`, { method: "PUT", body: r }),
-  deleteRule: (id) => _req(`/alerts/rules/${id}`, { method: "DELETE" }),
-  listChannels: () => _req("/alerts/channels"),
-  createChannel: (c) => _req("/alerts/channels", { method: "POST", body: c }),
-  deleteChannel: (id) => _req(`/alerts/channels/${id}`, { method: "DELETE" }),
-  testChannel: (c) => _req("/alerts/channels/test", { method: "POST", body: c }),
   compliance: () => _req("/compliance"),
   complianceDevice: (id) => _req(`/compliance/devices/${id}`),
   listPolicies: () => _req("/compliance/policies"),
@@ -957,6 +949,47 @@ const SBIcon = ({n}) => {
 function devColor(t){ return ({router:{bg:"#1a2e3e",color:"#58a6ff"},switch:{bg:"#1a3e2a",color:"#3fb950"},firewall:{bg:"#3d2e1a",color:"#e3b341"},ap:{bg:"#2e1a3e",color:"#bc8cff"}})[t]||{bg:"#21262d",color:"#8b949e"}; }
 function DevIcon({type,size=16}){ const c=devColor(type); const ico={router:IC.router,switch:IC.switch,firewall:IC.firewall}[type]||IC.switch; return <div style={{width:size+12,height:size+12,borderRadius:6,background:c.bg,color:c.color,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{React.cloneElement(ico,{width:size,height:size})}</div>; }
 
+// Compact device summary that overlays in place (from topology/alerts/etc.)
+// instead of navigating away. Live metrics come from the fleet summary map.
+function QuickView({device:d, metrics, onClose, onOpenFull}) {
+  const col = devColor(d.type);
+  const m = metrics || {};
+  const cpu = m.cpu != null ? Math.round(m.cpu) : null;
+  const mem = m.mem != null ? Math.round(m.mem) : null;
+  const uptime = m.uptime || (d.uptime && d.uptime !== "—" ? d.uptime : "—");
+  const ro = d.capability === "readonly";
+  return (
+    <div className="overlay" onMouseDown={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div className="modal" style={{width:380}}>
+        <div className="modal-hdr" style={{display:"flex",alignItems:"center",gap:10}}>
+          <div className="di" style={{background:col.bg,color:col.color,width:34,height:34,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center"}}>{IC[d.type]||IC.switch}</div>
+          <div style={{flex:1}}>
+            <div className="modal-title" style={{marginBottom:0}}>{d.name}</div>
+            <div style={{fontSize:12,color:"#8b949e"}}>{d.ip} · {d.vendor} {d.model}</div>
+          </div>
+          <span className={`sbadge ${d.status}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>{d.status}</span>
+        </div>
+        <div className="modal-body">
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+            <div className="metric-card"><div className="metric-label">CPU</div><div className="metric-val">{cpu!=null?cpu+"%":"—"}</div></div>
+            <div className="metric-card"><div className="metric-label">Memory</div><div className="metric-val">{mem!=null?mem+"%":"—"}</div></div>
+            <div className="metric-card"><div className="metric-label">Uptime</div><div className="metric-val" style={{fontSize:14}}>{uptime}</div></div>
+          </div>
+          <div style={{fontSize:12,color:"#8b949e",lineHeight:1.7}}>
+            <div><span style={{color:"#6e7681"}}>Type:</span> {d.type}{d.role?` · ${d.role}`:""}</div>
+            <div><span style={{color:"#6e7681"}}>Protocol:</span> {d.protocol}{ro?" · read-only (controller-managed)":""}</div>
+            {d.location && <div><span style={{color:"#6e7681"}}>Location:</span> {d.location}</div>}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="mbtn cancel" onClick={onClose}>Close</button>
+          <button className="mbtn add" onClick={onOpenFull}>Open full details ›</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ───────────────────────── Switch Faceplate ────────────────────────── */
 function portShort(name){ const m=name.match(/(\d+([/.]\d+)*)$/); return m?m[1].replace(/\./g,"/"):name; }
 function isMgmt(n){ return /^management/i.test(n)||n==="me0"||n.toLowerCase().startsWith("gigabitethernet0/0"); }
@@ -1490,6 +1523,17 @@ function ConfigArchive({device, archive, onBackup, onRestore}) {
   const [restoring, setRestoring] = useState(false);
   const [banner, setBanner] = useState(null);        // { kind:'ok'|'warn'|'err', text }
   const [confirmRestore, setConfirmRestore] = useState(null);
+  // per-device archive settings (enable + interval), seeded from the device
+  const [bkEnabled, setBkEnabled] = useState(device.backupEnabled !== false);
+  const [bkInterval, setBkInterval] = useState(device.backupIntervalHours || 24);
+  const [bkSaved, setBkSaved] = useState(false);
+  function saveBackupSettings(enabled, interval){
+    setBkEnabled(enabled); setBkInterval(interval);
+    if (MOCK_MODE) { setBkSaved(true); setTimeout(()=>setBkSaved(false),1500); return; }
+    api.editDevice(device.id, {backup_enabled:enabled, backup_interval_hours:Number(interval)})
+      .then(()=>{ setBkSaved(true); setTimeout(()=>setBkSaved(false),1500); })
+      .catch(()=>{});
+  }
   const textCache = useRef({});                      // version id -> config text
 
   const readOnly = device.capability === "readonly";
@@ -1687,6 +1731,29 @@ function ConfigArchive({device, archive, onBackup, onRestore}) {
           {busy ? IC.clock : IC.download} {busy ? "Pulling config…" : "Back up now"}
         </button>
         <button className="cfg-btn" disabled={sel.length !== 2} onClick={openDiff}>{IC.diff} Compare ({sel.length}/2)</button>
+      </div>
+
+      <div className="sched-bar" style={{marginBottom:12}}>
+        <div style={{width:34,height:34,borderRadius:8,background:"#1a2e3e",color:"#58a6ff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{IC.clock}</div>
+        <div className="sched-info">
+          <div className="sched-title">Automatic archiving</div>
+          <div className="sched-sub">
+            {bkEnabled ? `Backed up every ${bkInterval}h, new version only on change` : "Disabled — this device is not archived automatically"}
+            {device.lastBackupAt && bkEnabled ? ` · last run ${tsAgo(Date.parse(device.lastBackupAt))}` : ""}
+            {bkSaved && <span style={{color:"#3fb950",marginLeft:8}}>✓ saved</span>}
+          </div>
+        </div>
+        <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,color:"#e6edf3",cursor:"pointer",marginRight:10}}>
+          <input type="checkbox" checked={bkEnabled} onChange={e=>saveBackupSettings(e.target.checked, bkInterval)}/> Enabled
+        </label>
+        <select className="finput" style={{width:120}} value={bkInterval} disabled={!bkEnabled}
+          onChange={e=>saveBackupSettings(bkEnabled, e.target.value)}>
+          <option value={1}>Every hour</option>
+          <option value={6}>Every 6h</option>
+          <option value={12}>Every 12h</option>
+          <option value={24}>Daily</option>
+          <option value={168}>Weekly</option>
+        </select>
       </div>
 
       {loading ? (
@@ -1980,6 +2047,11 @@ function AppInner({auth, onLogout}) {
     if (selId===id) setSelId(null);
   }
   function pickDevice(id){ setSelId(id); setTab("detail"); setSelIface(null); setView("inventory"); }
+  // Quick-view overlay: opening a device from another view (topology, alerts,
+  // archival) pops a summary in place rather than yanking you to the inventory.
+  const [quickViewId, setQuickViewId] = useState(null);
+  function openQuickView(id){ setQuickViewId(id); }
+  function quickViewToFull(id){ setQuickViewId(null); pickDevice(id); }
 
   // Pull running-config, hash it, store a new version only if it changed.
   function backupDevice(devId, trigger="manual") {
@@ -2055,9 +2127,9 @@ function AppInner({auth, onLogout}) {
           ) : view==="compliance" ? (
             <ComplianceView auth={auth} devices={devices}/>
           ) : view==="alerts" ? (
-            <AlertsView auth={auth} devices={devices} onOpenDevice={(id)=>{setView("inventory");setSelId(id);setTab("detail");setSelIface(null);}}/>
+            <AlertsView auth={auth} devices={devices} onOpenDevice={openQuickView}/>
           ) : view==="topology" ? (
-            <TopologyView devices={devices} onOpenDevice={(id)=>{setView("inventory");setSelId(id);setTab("detail");setSelIface(null);}}/>
+            <TopologyView devices={devices} onOpenDevice={openQuickView}/>
           ) : view==="integrations" ? (
             <IntegrationsView auth={auth}/>
           ) : view==="configmgmt" ? (
@@ -2215,6 +2287,10 @@ function AppInner({auth, onLogout}) {
         </div>
 
         {showAdd && <AddDeviceModal onClose={()=>setShowAdd(false)} onAdd={addDevice}/>}
+        {quickViewId != null && (() => { const qd = devices.find(d=>d.id===quickViewId); return qd ? (
+          <QuickView device={qd} metrics={fleetMetrics[qd.id]} onClose={()=>setQuickViewId(null)}
+            onOpenFull={()=>quickViewToFull(qd.id)}/>
+        ) : null; })()}
         {editId != null && (() => { const ed = devices.find(d=>d.id===editId); return ed ? (
           <EditDeviceModal device={ed} onClose={()=>setEditId(null)}
             onSaved={(updated)=>{ setDevices(p=>p.map(d=>d.id===updated.id?{...d,...updated}:d)); setEditId(null); }}/>
