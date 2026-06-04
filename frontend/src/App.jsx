@@ -58,9 +58,9 @@ const api = {
   listConfigs: (id) => _req(`/devices/${id}/configs`),
   getConfig: (id, vid) => _req(`/devices/${id}/configs/${vid}`),
   diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${a}&b=${b}`),
-  backupDevice: (id) => _req(`/devices/${id}/backup`, { method: "POST" }),
-  restoreConfig: (id, vid) => _req(`/devices/${id}/restore/${vid}`, { method: "POST" }),
-  backupAll: () => _req("/backup-all", { method: "POST" }),
+  backupDevice: (id) => _req(`/devices/${id}/backup`, { method: "POST", timeoutMs: 60000 }),
+  restoreConfig: (id, vid) => _req(`/devices/${id}/restore/${vid}`, { method: "POST", timeoutMs: 150000 }),
+  backupAll: () => _req("/backup-all", { method: "POST", timeoutMs: 180000 }),
   listControllers: () => _req("/integrations"),
   addController: (b) => _req("/integrations", { method: "POST", body: b }),
   testController: (b) => _req("/integrations/test", { method: "POST", body: b }),
@@ -378,10 +378,21 @@ tbody tr:hover .row-acts{opacity:1;}
 .dv.ctx{color:#8b949e;}
 .dv.add .gut{color:#3fb950;}
 .dv.del .gut{color:#f85149;}
+.dv.hunk{background:#1a1230;color:#bc8cff;}
+.dv.hunk .gut{color:#bc8cff;}
 .diff-hdr{display:flex;align-items:center;gap:10px;font-size:12px;color:#8b949e;margin-bottom:9px;font-family:'IBM Plex Mono',monospace;}
 .diff-hdr .pm{font-weight:600;}
 .diff-hdr .plus{color:#3fb950;}.diff-hdr .minus{color:#f85149;}
 .cfg-empty{text-align:center;padding:30px 14px;color:#6e7681;font-size:13px;}
+.cfg-banner{display:flex;align-items:flex-start;gap:8px;padding:9px 12px;border-radius:7px;font-size:12px;line-height:1.5;margin-bottom:11px;}
+.cfg-banner .bx{margin-left:auto;cursor:pointer;opacity:.7;flex-shrink:0;}
+.cfg-banner .bx:hover{opacity:1;}
+.cfg-banner.ok{background:#1a3e2a;border:1px solid #2ea04355;color:#3fb950;}
+.cfg-banner.warn{background:#3d2e1a;border:1px solid #e3b34155;color:#e3b341;}
+.cfg-banner.err{background:#3d1a1a;border:1px solid #f8514955;color:#f85149;}
+.cfg-loading{display:flex;align-items:center;gap:9px;padding:24px 14px;color:#8b949e;font-size:13px;justify-content:center;}
+.cfg-spin{width:15px;height:15px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:cfgspin .7s linear infinite;flex-shrink:0;}
+@keyframes cfgspin{to{transform:rotate(360deg);}}
 
 /* ── Fleet config-mgmt view ── */
 .fleet-wrap{flex:1;overflow-y:auto;padding:16px;}
@@ -672,6 +683,26 @@ function diffConfig(oldText, newText) {
   return out;
 }
 function diffStats(d){ return { added:d.filter(x=>x.type==="add").length, removed:d.filter(x=>x.type==="del").length }; }
+
+// Parse a git unified diff (what /configs/diff returns) into renderable rows.
+// Header lines (diff --git, index, ---, +++) are dropped; @@ hunks are kept as
+// markers; +/- lines become add/del; everything else is context.
+function parseUnifiedDiff(text){
+  const rows=[]; let added=0, removed=0;
+  (text||"").split("\n").forEach(line=>{
+    if (line.startsWith("diff --git")||line.startsWith("index ")||
+        line.startsWith("--- ")||line.startsWith("+++ ")||
+        line.startsWith("new file")||line.startsWith("deleted file")||
+        line.startsWith("old mode")||line.startsWith("new mode")||
+        line.startsWith("similarity ")||line.startsWith("rename ")) return;
+    if (line.startsWith("\\")) return;                 // "\ No newline at end of file"
+    if (line.startsWith("@@")) { rows.push({type:"hunk", text:line}); return; }
+    if (line.startsWith("+")) { rows.push({type:"add", text:line.slice(1)}); added++; return; }
+    if (line.startsWith("-")) { rows.push({type:"del", text:line.slice(1)}); removed++; return; }
+    rows.push({type:"ctx", text:line.startsWith(" ")?line.slice(1):line});
+  });
+  return { rows, added, removed };
+}
 
 function tsAgo(ms){ const s=(Date.now()-ms)/1000; if(s<60)return"just now"; if(s<3600)return`${(s/60)|0}m ago`; if(s<86400)return`${(s/3600)|0}h ago`; return`${(s/86400)|0}d ago`; }
 function tsFull(ms){ return new Date(ms).toLocaleString(undefined,{year:"numeric",month:"short",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}); }
@@ -1445,126 +1476,256 @@ function EditDeviceModal({device, onClose, onSaved}) {
 
 /* ───────────────────────── Config Archive (device tab) ─────────────── */
 function ConfigArchive({device, archive, onBackup, onRestore}) {
-  const entry = archive[device.id] || { versions:[] };
-  const versions = [...entry.versions].sort((a,b)=>b.ts-a.ts); // newest first
-  const [mode, setMode] = useState("list");       // list | view | diff
+  const [versions, setVersions] = useState([]);     // normalized: ts in ms (newest first)
+  const [loading, setLoading] = useState(!MOCK_MODE);
+  const [loadErr, setLoadErr] = useState("");
+  const [mode, setMode] = useState("list");          // list | view | diff
   const [viewVer, setViewVer] = useState(null);
-  const [sel, setSel] = useState([]);             // selected version ids for diff
-  const [busy, setBusy] = useState(false);
+  const [viewText, setViewText] = useState("");
+  const [viewLoading, setViewLoading] = useState(false);
+  const [sel, setSel] = useState([]);                // selected version ids for diff
+  const [diffData, setDiffData] = useState(null);    // { rows, added, removed, a, b, error }
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [busy, setBusy] = useState(false);           // backup-now in flight
+  const [restoring, setRestoring] = useState(false);
+  const [banner, setBanner] = useState(null);        // { kind:'ok'|'warn'|'err', text }
   const [confirmRestore, setConfirmRestore] = useState(null);
+  const textCache = useRef({});                      // version id -> config text
 
+  const readOnly = device.capability === "readonly";
+
+  // ── load the version list ────────────────────────────────────────────
+  function loadVersions() {
+    setLoading(true); setLoadErr("");
+    return api.listConfigs(device.id)
+      .then(rows => {
+        const norm = (rows || [])
+          .map(v => ({ ...v, ts: Date.parse(v.ts) }))
+          .sort((a, b) => b.ts - a.ts);
+        setVersions(norm);
+      })
+      .catch(e => setLoadErr(e.message || "Failed to load version history"))
+      .finally(() => setLoading(false));
+  }
+
+  // Real mode: fetch on device change. Mock mode: derive from the archive prop.
+  useEffect(() => { if (!MOCK_MODE) loadVersions(); }, [device.id]);
+  useEffect(() => {
+    if (!MOCK_MODE) return;
+    const entry = archive[device.id] || { versions: [] };
+    setVersions([...entry.versions].sort((a, b) => b.ts - a.ts));
+    setLoading(false);
+  }, [archive, device.id]);
+
+  function flash(kind, text) { setBanner({ kind, text }); }
   function toggleSel(id) {
-    setSel(s => s.includes(id) ? s.filter(x=>x!==id) : (s.length>=2 ? [s[1],id] : [...s,id]));
+    setSel(s => s.includes(id) ? s.filter(x => x !== id) : (s.length >= 2 ? [s[1], id] : [...s, id]));
   }
-  function runBackup() {
-    setBusy(true);
-    setTimeout(()=>{ onBackup(device.id); setBusy(false); }, 1400);
-  }
-  function copyText(t){ navigator.clipboard?.writeText(t).catch(()=>{}); }
-  function downloadCfg(v){
-    const blob=new Blob([v.text],{type:"text/plain"});
-    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
-    a.download=`${device.hostname}_${new Date(v.ts).toISOString().slice(0,19).replace(/[:T]/g,"-")}.cfg`;
+  function copyText(t) { navigator.clipboard?.writeText(t).catch(() => {}); }
+  function downloadCfg(v, text) {
+    const blob = new Blob([text], { type: "text/plain" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `${device.hostname}_${new Date(v.ts).toISOString().slice(0, 19).replace(/[:T]/g, "-")}.cfg`;
     a.click(); URL.revokeObjectURL(a.href);
   }
 
-  if (mode==="view" && viewVer) {
-    const lines = viewVer.text.split("\n");
+  // ── view a single version (text fetched lazily, then cached) ──────────
+  function openView(v) {
+    setViewVer(v); setMode("view");
+    if (MOCK_MODE) { setViewText(v.text || ""); return; }
+    if (textCache.current[v.id] != null) { setViewText(textCache.current[v.id]); return; }
+    setViewLoading(true); setViewText("");
+    api.getConfig(device.id, v.id)
+      .then(r => { const t = r.text || ""; textCache.current[v.id] = t; setViewText(t); })
+      .catch(e => setViewText(`! failed to load config: ${e.message}`))
+      .finally(() => setViewLoading(false));
+  }
+
+  // ── diff two versions (server-side git diff in real mode) ─────────────
+  function openDiff() {
+    if (sel.length !== 2) return;
+    const [a, b] = sel.map(id => versions.find(v => v.id === id)).sort((x, y) => x.ts - y.ts); // older → newer
+    setMode("diff");
+    if (MOCK_MODE) {
+      const d = diffConfig(a.text, b.text);
+      setDiffData({ rows: d, ...diffStats(d), a, b });
+      return;
+    }
+    setDiffLoading(true); setDiffData({ a, b });
+    api.diffConfigs(device.id, a.id, b.id)
+      .then(r => setDiffData({ a, b, ...parseUnifiedDiff(r.diff || "") }))
+      .catch(e => setDiffData({ a, b, error: e.message }))
+      .finally(() => setDiffLoading(false));
+  }
+
+  // ── back up now ───────────────────────────────────────────────────────
+  function runBackup() {
+    if (MOCK_MODE) { setBusy(true); setTimeout(() => { onBackup(device.id); setBusy(false); }, 1400); return; }
+    setBusy(true); setBanner(null);
+    api.backupDevice(device.id)
+      .then(r => {
+        if (r && r.ok === false) { flash("err", "Backup failed: " + (r.error || "unknown error")); return; }
+        if (r && r.changed === false) flash("warn", `No changes — running-config matches the latest archived version (#${r.hash}).`);
+        else flash("ok", `New version archived${r && r.hash ? ` (#${r.hash})` : ""}.`);
+        return loadVersions();
+      })
+      .catch(e => flash("err", "Backup failed: " + e.message))
+      .finally(() => setBusy(false));
+  }
+
+  // ── restore a version to the live device ──────────────────────────────
+  function doRestore(v) {
+    setConfirmRestore(null);
+    if (MOCK_MODE) { onRestore(device.id, v); setMode("list"); return; }
+    setRestoring(true); setBanner(null);
+    api.restoreConfig(device.id, v.id)
+      .then(r => {
+        if (r && r.ok === false) { flash("err", "Restore failed: " + (r.error || "unknown error")); return; }
+        flash("ok", `Restored snapshot #${v.hash} — pushed to ${device.hostname} and saved. A new archive version was recorded.`);
+        setMode("list");
+        return loadVersions();
+      })
+      .catch(e => flash("err", "Restore failed: " + e.message))
+      .finally(() => setRestoring(false));
+  }
+
+  const bannerEl = banner && (
+    <div className={`cfg-banner ${banner.kind}`}>
+      {banner.kind === "ok" ? IC.check : IC.warn}
+      <span>{banner.text}</span>
+      <span className="bx" onClick={() => setBanner(null)}>{IC.x}</span>
+    </div>
+  );
+
+  // ── VIEW MODE ─────────────────────────────────────────────────────────
+  if (mode === "view" && viewVer) {
+    const lines = viewText.split("\n");
     return (
       <div className="dpane">
-        <div className="ed-back" onClick={()=>setMode("list")}>{IC.back} Back to history</div>
+        <div className="ed-back" onClick={() => setMode("list")}>{IC.back} Back to history</div>
+        {bannerEl}
         <div>
-          <div className="ed-title" style={{fontSize:14}}>{device.hostname} config</div>
+          <div className="ed-title" style={{ fontSize: 14 }}>{device.hostname} config</div>
           <div className="dsub">{tsFull(viewVer.ts)} · {viewVer.lines} lines · {viewVer.bytes} bytes · #{viewVer.hash}</div>
         </div>
         <div className="cfg-toolbar">
-          <button className="cfg-btn" onClick={()=>copyText(viewVer.text)}>{IC.copy} Copy</button>
-          <button className="cfg-btn" onClick={()=>downloadCfg(viewVer)}>{IC.download} Download</button>
-          <button className="cfg-btn" onClick={()=>setConfirmRestore(viewVer)}>{IC.restore} Restore this</button>
+          <button className="cfg-btn" disabled={viewLoading || !viewText} onClick={() => copyText(viewText)}>{IC.copy} Copy</button>
+          <button className="cfg-btn" disabled={viewLoading || !viewText} onClick={() => downloadCfg(viewVer, viewText)}>{IC.download} Download</button>
+          {!readOnly && <button className="cfg-btn" disabled={viewLoading} onClick={() => setConfirmRestore(viewVer)}>{IC.restore} Restore this</button>}
         </div>
-        <div className="cfg-view">
-          {lines.map((l,i)=><div key={i} className="cv"><span className="ln">{i+1}</span>{l}</div>)}
-        </div>
-        {confirmRestore && <RestoreConfirm device={device} version={confirmRestore} onCancel={()=>setConfirmRestore(null)} onConfirm={()=>{onRestore(device.id,confirmRestore);setConfirmRestore(null);setMode("list");}}/>}
+        {viewLoading ? (
+          <div className="cfg-loading"><span className="cfg-spin" /> Fetching archived config…</div>
+        ) : (
+          <div className="cfg-view">
+            {lines.map((l, i) => <div key={i} className="cv"><span className="ln">{i + 1}</span>{l}</div>)}
+          </div>
+        )}
+        {confirmRestore && <RestoreConfirm device={device} version={confirmRestore} busy={restoring}
+          onCancel={() => setConfirmRestore(null)} onConfirm={() => doRestore(confirmRestore)} />}
       </div>
     );
   }
 
-  if (mode==="diff" && sel.length===2) {
-    const [a,b] = sel.map(id=>versions.find(v=>v.id===id)).sort((x,y)=>x.ts-y.ts); // older→newer
-    const d = diffConfig(a.text, b.text);
-    const st = diffStats(d);
+  // ── DIFF MODE ─────────────────────────────────────────────────────────
+  if (mode === "diff" && diffData) {
+    const { a, b, rows, added, removed, error } = diffData;
+    // Server diffs are already hunked; client (mock) diffs need context collapse.
+    const hasHunks = rows && rows.some(r => r.type === "hunk");
+    const display = !rows ? [] : (hasHunks ? rows : rows.filter((x, i, arr) => {
+      if (x.type !== "ctx") return true;
+      return arr.slice(Math.max(0, i - 2), i + 3).some(y => y.type !== "ctx");
+    }));
     return (
       <div className="dpane">
-        <div className="ed-back" onClick={()=>setMode("list")}>{IC.back} Back to history</div>
-        <div className="ed-title" style={{fontSize:14}}>Compare versions</div>
+        <div className="ed-back" onClick={() => setMode("list")}>{IC.back} Back to history</div>
+        {bannerEl}
+        <div className="ed-title" style={{ fontSize: 14 }}>Compare versions</div>
         <div className="diff-hdr">
           <span className="minus pm">− {tsAgo(a.ts)} (#{a.hash})</span>
-          <span style={{color:"#484f58"}}>→</span>
+          <span style={{ color: "#484f58" }}>→</span>
           <span className="plus pm">+ {tsAgo(b.ts)} (#{b.hash})</span>
-          <span style={{marginLeft:"auto"}}><span className="plus">+{st.added}</span> <span className="minus">−{st.removed}</span></span>
+          {!diffLoading && !error && <span style={{ marginLeft: "auto" }}><span className="plus">+{added}</span> <span className="minus">−{removed}</span></span>}
         </div>
-        <div className="diff-view">
-          {d.filter((x,i,arr)=>{ // collapse long runs of context
-            if (x.type!=="ctx") return true;
-            const near = arr.slice(Math.max(0,i-2),i+3).some(y=>y.type!=="ctx");
-            return near;
-          }).map((x,i)=>(
-            <div key={i} className={`dv ${x.type}`}><span className="gut">{x.type==="add"?"+":x.type==="del"?"−":" "}</span>{x.text||" "}</div>
-          ))}
-        </div>
+        {diffLoading ? (
+          <div className="cfg-loading"><span className="cfg-spin" /> Computing diff…</div>
+        ) : error ? (
+          <div className="cfg-banner err">{IC.warn}<span>Could not compute diff: {error}</span></div>
+        ) : display.length === 0 ? (
+          <div className="cfg-empty">No differences — these two versions are identical.</div>
+        ) : (
+          <div className="diff-view">
+            {display.map((x, i) => (
+              <div key={i} className={`dv ${x.type}`}>
+                <span className="gut">{x.type === "add" ? "+" : x.type === "del" ? "−" : x.type === "hunk" ? "⋯" : " "}</span>{x.text || " "}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
 
+  // ── LIST MODE ─────────────────────────────────────────────────────────
   return (
     <div className="dpane">
       <div className="dhdr">
-        <DevIcon type={device.type} size={20}/>
+        <DevIcon type={device.type} size={20} />
         <div>
           <div className="dname">{device.hostname}</div>
-          <div className="dsub">{versions.length} archived versions · pulled via {device.protocol==="SNMP"?"SSH":device.protocol}</div>
+          <div className="dsub">{versions.length} archived version{versions.length === 1 ? "" : "s"} · pulled via {device.protocol === "SNMP" ? "SSH" : device.protocol}</div>
         </div>
       </div>
 
+      {bannerEl}
+
+      {readOnly ? (
+        <div className="cfg-empty">This device is controller-managed (read-only). Config archival is handled by its controller and isn't available here.</div>
+      ) : (
+      <>
       <div className="cfg-toolbar">
-        <button className="cfg-btn primary" onClick={runBackup} disabled={busy}>
+        <button className="cfg-btn primary" onClick={runBackup} disabled={busy || restoring}>
           {busy ? IC.clock : IC.download} {busy ? "Pulling config…" : "Back up now"}
         </button>
-        <button className="cfg-btn" disabled={sel.length!==2} onClick={()=>setMode("diff")}>{IC.diff} Compare ({sel.length}/2)</button>
+        <button className="cfg-btn" disabled={sel.length !== 2} onClick={openDiff}>{IC.diff} Compare ({sel.length}/2)</button>
       </div>
 
-      {versions.length===0 ? (
+      {loading ? (
+        <div className="cfg-loading"><span className="cfg-spin" /> Loading version history…</div>
+      ) : loadErr ? (
+        <div className="cfg-banner err">{IC.warn}<span>{loadErr}</span><span className="bx" onClick={loadVersions}>{IC.refresh}</span></div>
+      ) : versions.length === 0 ? (
         <div className="cfg-empty">No archived configs yet. Click “Back up now” to pull the running-config over SSH.</div>
       ) : (
         <div>
           <div className="sec-title">Version history — select two to diff</div>
-          {versions.map((v,idx)=>(
-            <div key={v.id} className={`ver-row ${idx===0?"current":""}`}>
-              <div className={`ver-cb ${sel.includes(v.id)?"on":""}`} onClick={()=>toggleSel(v.id)}>{sel.includes(v.id)&&IC.check}</div>
-              <div className="ver-meta" onClick={()=>{setViewVer(v);setMode("view");}} style={{cursor:"pointer"}}>
+          {versions.map((v, idx) => (
+            <div key={v.id} className={`ver-row ${idx === 0 ? "current" : ""}`}>
+              <div className={`ver-cb ${sel.includes(v.id) ? "on" : ""}`} onClick={() => toggleSel(v.id)}>{sel.includes(v.id) && IC.check}</div>
+              <div className="ver-meta" onClick={() => openView(v)} style={{ cursor: "pointer" }}>
                 <div className="ver-when">
                   {tsAgo(v.ts)}
-                  {idx===0 && <span className="trigger-tag manual" style={{background:"#1a3e2a",color:"#3fb950"}}>current</span>}
+                  {idx === 0 && <span className="trigger-tag manual" style={{ background: "#1a3e2a", color: "#3fb950" }}>current</span>}
                   <span className={`trigger-tag ${v.trigger}`}>{v.trigger}</span>
                 </div>
-                <div className="ver-sub">{tsFull(v.ts)} · {v.lines} lines · #{v.hash}</div>
+                <div className="ver-sub">{tsFull(v.ts)} · {v.lines} lines · #{v.hash}{v.user ? ` · ${v.user}` : ""}</div>
               </div>
               <div className="ver-acts">
-                <div className="va" title="View" onClick={()=>{setViewVer(v);setMode("view");}}>{IC.info}</div>
-                <div className="va" title="Download" onClick={()=>downloadCfg(v)}>{IC.download}</div>
-                <div className="va restore-a" title="Restore" onClick={()=>setConfirmRestore(v)}>{IC.restore}</div>
+                <div className="va" title="View" onClick={() => openView(v)}>{IC.info}</div>
+                <div className="va restore-a" title="Restore" onClick={() => setConfirmRestore(v)}>{IC.restore}</div>
               </div>
             </div>
           ))}
         </div>
       )}
-      {confirmRestore && <RestoreConfirm device={device} version={confirmRestore} onCancel={()=>setConfirmRestore(null)} onConfirm={()=>{onRestore(device.id,confirmRestore);setConfirmRestore(null);}}/>}
+      </>
+      )}
+      {confirmRestore && <RestoreConfirm device={device} version={confirmRestore} busy={restoring}
+        onCancel={() => setConfirmRestore(null)} onConfirm={() => doRestore(confirmRestore)} />}
     </div>
   );
 }
 
-function RestoreConfirm({device, version, onCancel, onConfirm}) {
+function RestoreConfirm({device, version, onCancel, onConfirm, busy=false}) {
   return (
     <div className="overlay">
       <div className="modal" style={{width:420}}>
@@ -1581,8 +1742,8 @@ function RestoreConfirm({device, version, onCancel, onConfirm}) {
           </div>
         </div>
         <div className="modal-footer">
-          <button className="mbtn cancel" onClick={onCancel}>Cancel</button>
-          <button className="mbtn" style={{background:"#bc8cff22",border:"1px solid #bc8cff",color:"#bc8cff"}} onClick={onConfirm}>Restore &amp; save</button>
+          <button className="mbtn cancel" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="mbtn" style={{background:"#bc8cff22",border:"1px solid #bc8cff",color:"#bc8cff",opacity:busy?0.6:1,cursor:busy?"not-allowed":"pointer"}} onClick={busy?undefined:onConfirm} disabled={busy}>{busy?"Restoring…":"Restore & save"}</button>
         </div>
       </div>
     </div>
@@ -1592,12 +1753,39 @@ function RestoreConfirm({device, version, onCancel, onConfirm}) {
 /* ───────────────────────── Fleet config-mgmt view ──────────────────── */
 function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
   const [running, setRunning] = useState(false);
-  const rows = devices.map(d=>{
-    const e = archive[d.id] || {versions:[]};
-    const vs = [...e.versions].sort((a,b)=>b.ts-a.ts);
-    const last = vs[0];
-    const changed = last?.trigger==="change-detected";
-    return { d, last, count:vs.length, status: e.lastStatus==="failed"?"failed":changed?"changed":"ok" };
+  const [loading, setLoading] = useState(!MOCK_MODE);
+  const [data, setData] = useState({});   // device id -> { versions:[ms-ts...], failed:bool }
+  const [tick, setTick] = useState(0);
+
+  // Controller-managed devices are read-only; their configs aren't archived here.
+  const managed = devices.filter(d => d.capability !== "readonly");
+
+  // Real mode: pull each managed device's version list. Mock mode: read the prop.
+  useEffect(() => {
+    if (MOCK_MODE) {
+      const m = {};
+      managed.forEach(d => { const e = archive[d.id] || {versions:[]}; m[d.id] = { versions: e.versions.map(v=>v.ts).sort((a,b)=>b-a), last: [...e.versions].sort((a,b)=>b.ts-a.ts)[0], failed: e.lastStatus==="failed" }; });
+      setData(m); setLoading(false); return;
+    }
+    let alive = true; setLoading(true);
+    Promise.all(managed.map(d =>
+      api.listConfigs(d.id)
+        .then(rows => [d.id, (rows||[]).map(v=>({...v, ts:Date.parse(v.ts)})).sort((a,b)=>b.ts-a.ts), false])
+        .catch(() => [d.id, [], true])
+    )).then(triples => {
+      if (!alive) return;
+      const m = {};
+      triples.forEach(([id, vs, failed]) => { m[id] = { versions: vs, last: vs[0] || null, failed }; });
+      setData(m); setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [tick, devices.length]);
+
+  const rows = managed.map(d => {
+    const e = data[d.id] || { versions: [], last: null, failed: false };
+    const last = e.last;
+    const changed = last?.trigger === "change-detected";
+    return { d, last, count: e.versions.length, status: e.failed ? "failed" : changed ? "changed" : "ok" };
   });
   const total = rows.length;
   const okCount = rows.filter(r=>r.status==="ok").length;
@@ -1605,34 +1793,43 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
   const failedCount = rows.filter(r=>r.status==="failed").length;
   const totalVersions = rows.reduce((a,r)=>a+r.count,0);
 
-  function backupAll(){ setRunning(true); setTimeout(()=>{ onBackupAll(); setRunning(false); }, 1800); }
+  function backupAll(){
+    setRunning(true);
+    Promise.resolve(onBackupAll())
+      .catch(()=>{})
+      .finally(()=>{ setRunning(false); setTick(t=>t+1); });
+  }
 
   return (
     <div className="fleet-wrap">
       <div className="fleet-kpis">
         <div className="fkpi"><div className="fkpi-label">Devices under backup</div><div className="fkpi-val">{total}</div><div className="fkpi-sub" style={{color:"#3fb950"}}>{okCount} up to date</div></div>
-        <div className="fkpi"><div className="fkpi-label">Changed since last run</div><div className="fkpi-val" style={{color:changedCount?"#e3b341":"#e6edf3"}}>{changedCount}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>new versions stored</div></div>
-        <div className="fkpi"><div className="fkpi-label">Failed backups</div><div className="fkpi-val" style={{color:failedCount?"#f85149":"#e6edf3"}}>{failedCount}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>need attention</div></div>
+        <div className="fkpi"><div className="fkpi-label">Recently changed</div><div className="fkpi-val" style={{color:changedCount?"#e3b341":"#e6edf3"}}>{changedCount}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>last version was a change</div></div>
+        <div className="fkpi"><div className="fkpi-label">Backup errors</div><div className="fkpi-val" style={{color:failedCount?"#f85149":"#e6edf3"}}>{failedCount}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>need attention</div></div>
         <div className="fkpi"><div className="fkpi-label">Archived versions</div><div className="fkpi-val">{totalVersions}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>across all hosts</div></div>
       </div>
 
       <div className="sched-bar">
         <div style={{width:34,height:34,borderRadius:8,background:"#1a2e3e",color:"#58a6ff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{IC.clock}</div>
         <div className="sched-info">
-          <div className="sched-title">Scheduled backup — every day at 02:00</div>
-          <div className="sched-sub">SSH pull · running-config hashed for change detection · next run in 6h 12m</div>
+          <div className="sched-title">Scheduled backup — daily</div>
+          <div className="sched-sub">SSH pull · running-config hashed for change detection · only changed configs create a new version</div>
         </div>
         <button className="cfg-btn primary" onClick={backupAll} disabled={running}>{running?IC.clock:IC.download} {running?"Backing up fleet…":"Run backup now"}</button>
       </div>
 
       <div className="fleet-tbl-card">
         <div className="fleet-tbl-hdr"><span className="t">Per-host backup status</span><span style={{fontSize:11,color:"#8b949e"}}>click a device to open its archive</span></div>
-        {rows.map(({d,last,count,status})=>(
+        {loading ? (
+          <div className="cfg-loading"><span className="cfg-spin"/> Loading fleet backup status…</div>
+        ) : rows.length === 0 ? (
+          <div className="cfg-empty">No archivable devices. Controller-managed (read-only) devices are excluded.</div>
+        ) : rows.map(({d,last,count,status})=>(
           <div key={d.id} className="fleet-row" onClick={()=>onOpenDevice(d.id)}>
             <DevIcon type={d.type} size={16}/>
             <div style={{flex:1,minWidth:0}}>
               <div className="fr-name">{d.hostname}</div>
-              <div className="fr-meta">{d.ip} · {d.vendor} · {count} versions</div>
+              <div className="fr-meta">{d.ip} · {d.vendor} · {count} version{count===1?"":"s"}</div>
             </div>
             <div style={{textAlign:"right"}}>
               <div className="fr-meta">{last?`last: ${tsAgo(last.ts)}`:"never"}</div>
@@ -1640,7 +1837,7 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
             </div>
             <span className={`bk-status ${status}`}>
               <span style={{width:6,height:6,borderRadius:"50%",background:"currentColor"}}/>
-              {status==="ok"?"up to date":status==="changed"?"changed":"failed"}
+              {status==="ok"?(last?"up to date":"no backups"):status==="changed"?"changed":"error"}
             </span>
           </div>
         ))}
@@ -1648,6 +1845,7 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
     </div>
   );
 }
+
 
 /* ───────────────────────── Main App ────────────────────────────────── */
 function AppInner({auth, onLogout}) {
@@ -1802,8 +2000,9 @@ function AppInner({auth, onLogout}) {
     });
   }
   function backupAll(){
-    if (!MOCK_MODE) { api.backupAll().catch(e=>console.error("backup-all failed", e)); return; }
+    if (!MOCK_MODE) { return api.backupAll().catch(e=>{ console.error("backup-all failed", e); throw e; }); }
     devices.forEach(d=>backupDevice(d.id,"scheduled"));
+    return Promise.resolve();
   }
 
   function restoreConfig(devId, version) {
