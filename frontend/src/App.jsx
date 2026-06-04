@@ -2745,10 +2745,24 @@ function buildMockGraph(devices) {
 
 const ROLE_COLOR = { core:"#58a6ff", distribution:"#3fb950", access:"#bc8cff", edge:"#e3b341" };
 
+// Format an LLDP port id for display. Some neighbors advertise the port as a
+// MAC address (hex octets, e.g. "40 ED 00 12 0A FE") rather than a name; show
+// those as a tidy MAC, and pass through real interface names unchanged.
+function fmtPortId(v) {
+  if (!v) return "—";
+  const s = String(v).trim();
+  const hex = s.replace(/[\s:]/g, "");
+  if (/^[0-9A-Fa-f]{12}$/.test(hex)) {
+    return hex.match(/.{2}/g).join(":").toLowerCase() + " (MAC)";
+  }
+  return s;
+}
+
 function TopologyView({devices, onOpenDevice}) {
   const [layout, setLayout] = useState("force");   // force | layered
   const [discovering, setDiscovering] = useState(false);
   const [discMsg, setDiscMsg] = useState(null);
+  const [hoverLink, setHoverLink] = useState(null);   // {i, x, y}
   const [graph, setGraph] = useState(()=>MOCK_MODE?buildMockGraph(devices):{nodes:[],links:[]});
   const [pos, setPos] = useState({});               // id -> {x,y}
   const [hover, setHover] = useState(null);
@@ -2841,9 +2855,19 @@ function TopologyView({devices, onOpenDevice}) {
         <svg ref={svgRef} width="100%" height="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
           {/* links */}
           {graph.links.map((l,i)=>{ const a=pos[l.source],b=pos[l.target]; if(!a||!b)return null;
-            return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-              stroke={l.status==="down"?"#5a2a2a":"#2c3440"} strokeWidth={l.status==="down"?1:2}
-              strokeDasharray={l.status==="down"?"4 3":"none"}/>;
+            return (
+              <g key={i}>
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                  stroke={l.status==="down"?"#5a2a2a":(hoverLink?.i===i?"#58a6ff":"#2c3440")}
+                  strokeWidth={l.status==="down"?1:(hoverLink?.i===i?3:2)}
+                  strokeDasharray={l.status==="down"?"4 3":"none"}/>
+                {/* wide invisible hit area for easy hovering */}
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={14}
+                  style={{cursor:"pointer"}}
+                  onMouseEnter={()=>setHoverLink({i, x:(a.x+b.x)/2, y:(a.y+b.y)/2})}
+                  onMouseLeave={()=>setHoverLink(null)}/>
+              </g>
+            );
           })}
           {/* nodes */}
           {graph.nodes.map(n=>{ const p=pos[n.id]; if(!p)return null; const col=ROLE_COLOR[n.role]||"#8b949e";
@@ -2866,8 +2890,30 @@ function TopologyView({devices, onOpenDevice}) {
               </g>
             );
           })}
+          {/* link hover tooltip: which ports connect the two devices */}
+          {hoverLink && (()=>{
+            const l=graph.links[hoverLink.i]; if(!l) return null;
+            const byId=Object.fromEntries(graph.nodes.map(n=>[n.id,n]));
+            const sName=byId[l.source]?.name||l.source, tName=byId[l.target]?.name||l.target;
+            const lines=[`${sName} — ${tName}`,
+                         `${sName}: ${fmtPortId(l.local_if)}`,
+                         `${tName}: ${fmtPortId(l.peer_if)}`];
+            const bw=Math.max(...lines.map(s=>s.length))*6.2+16, bh=lines.length*15+10;
+            let bx=hoverLink.x+10, by=hoverLink.y-bh-6;
+            if(bx+bw>W) bx=W-bw-4; if(by<0) by=hoverLink.y+10;
+            return (
+              <g pointerEvents="none">
+                <rect x={bx} y={by} width={bw} height={bh} rx={6} fill="#161b22" stroke="#30363d"/>
+                {lines.map((s,k)=>(
+                  <text key={k} x={bx+8} y={by+16+k*15} fontSize={11}
+                        fill={k===0?"#e6edf3":"#8b949e"} fontWeight={k===0?600:400}
+                        fontFamily="'IBM Plex Mono', monospace">{s}</text>
+                ))}
+              </g>
+            );
+          })()}
         </svg>
-        <div className="topo-hint">{layout==="force"?"Force-directed — physics layout":"Layered — by role (core → distribution → access → edge)"} · click a node for details</div>
+        <div className="topo-hint">{layout==="force"?"Force-directed — physics layout":"Layered — by role (core → distribution → access → edge)"} · click a node for details · hover a link for ports</div>
       </div>
     </div>
   );
