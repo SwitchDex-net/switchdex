@@ -960,7 +960,7 @@ function DevIcon({type,size=16}){ const c=devColor(type); const ico={router:IC.r
 
 // Compact device summary that overlays in place (from topology/alerts/etc.)
 // instead of navigating away. Live metrics come from the fleet summary map.
-function QuickView({device:d, metrics, onClose, onOpenFull}) {
+function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs}) {
   const col = devColor(d.type);
   const m = metrics || {};
   const cpu = m.cpu != null ? Math.round(m.cpu) : null;
@@ -994,8 +994,9 @@ function QuickView({device:d, metrics, onClose, onOpenFull}) {
             {d.os && <div><span style={{color:"#6e7681"}}>OS:</span> {d.os}</div>}
           </div>
         </div>
-        <div className="qv-footer">
-          <button className="mbtn add" style={{width:"100%"}} onClick={onOpenFull}>Open full details ›</button>
+        <div className="qv-footer" style={{display:"flex",gap:8}}>
+          {onOpenConfigs && d.capability!=="readonly" && <button className="mbtn cancel" style={{flex:1}} onClick={onOpenConfigs}>Config archive</button>}
+          <button className="mbtn add" style={{flex:1}} onClick={onOpenFull}>Full details ›</button>
         </div>
       </div>
     </>
@@ -2064,6 +2065,7 @@ function AppInner({auth, onLogout}) {
   const [quickViewId, setQuickViewId] = useState(null);
   function openQuickView(id){ setQuickViewId(id); }
   function quickViewToFull(id){ setQuickViewId(null); pickDevice(id); }
+  function quickViewToConfigs(id){ setQuickViewId(null); openDeviceConfigs(id); }
 
   // Pull running-config, hash it, store a new version only if it changed.
   function backupDevice(devId, trigger="manual") {
@@ -2145,7 +2147,7 @@ function AppInner({auth, onLogout}) {
           ) : view==="integrations" ? (
             <IntegrationsView auth={auth}/>
           ) : view==="configmgmt" ? (
-            <FleetConfigView devices={devices} archive={archive} onBackupAll={backupAll} onOpenDevice={openDeviceConfigs}/>
+            <FleetConfigView devices={devices} archive={archive} onBackupAll={backupAll} onOpenDevice={openQuickView}/>
           ) : (
           <div className={`content ${fullId!=null?"full":""}`}>
             <div className="left-pane">
@@ -2301,7 +2303,7 @@ function AppInner({auth, onLogout}) {
         {showAdd && <AddDeviceModal onClose={()=>setShowAdd(false)} onAdd={addDevice}/>}
         {quickViewId != null && (() => { const qd = devices.find(d=>d.id===quickViewId); return qd ? (
           <QuickView device={qd} metrics={fleetMetrics[qd.id]} onClose={()=>setQuickViewId(null)}
-            onOpenFull={()=>quickViewToFull(qd.id)}/>
+            onOpenFull={()=>quickViewToFull(qd.id)} onOpenConfigs={()=>quickViewToConfigs(qd.id)}/>
         ) : null; })()}
         {editId != null && (() => { const ed = devices.find(d=>d.id===editId); return ed ? (
           <EditDeviceModal device={ed} onClose={()=>setEditId(null)}

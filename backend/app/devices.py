@@ -52,24 +52,74 @@ async def _ssh_pull_config(ip, port, user, pw, platform="ios") -> str:
     plat = (platform or "").lower()
 
     # pfSense / OPNsense (FreeBSD): config is an XML file, not a CLI "show run".
-    # Pull it directly. These often present a console menu on interactive login,
-    # so use a one-shot exec of `cat` which bypasses the menu.
-    if plat in ("pfsense", "opnsense", "freebsd", "bsd"):
-        async def _go_bsd():
+    # Pull it directly. OPNsense/pfSense usually present an interactive console
+    # menu on SSH login; try a one-shot `cat` first (works if the user has a real
+    # shell), then fall back to driving the menu: option 8 opens a shell on
+    # OPNsense, where we can cat the config.
+    if plat in ("pfsense", "opnsense", "freebsd", "bsd", "linux"):
+        def _looks_like_config(t):
+            return t.strip().startswith("<?xml") or "<opnsense>" in t or "<pfsense>" in t
+
+        async def _go_exec():
             async with asyncssh.connect(ip, port=port, username=user, password=pw,
                                         known_hosts=None, kex_algs=LEGACY_KEX,
                                         server_host_key_algs=LEGACY_HKEY,
                                         connect_timeout=10) as conn:
                 r = await conn.run("cat /conf/config.xml", check=False, timeout=30)
                 return (r.stdout or "")
+
+        async def _drain2(proc, timeout=1.2):
+            buf = ""
+            try:
+                while True:
+                    chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=timeout)
+                    if not chunk:
+                        break
+                    buf += chunk
+            except asyncio.TimeoutError:
+                pass
+            return buf
+
+        async def _go_menu():
+            async with asyncssh.connect(ip, port=port, username=user, password=pw,
+                                        known_hosts=None, kex_algs=LEGACY_KEX,
+                                        server_host_key_algs=LEGACY_HKEY,
+                                        connect_timeout=10) as conn:
+                proc = await conn.create_process(term_type="vt100", encoding="utf-8")
+                await asyncio.sleep(0.5)
+                await _drain2(proc, 1.0)          # consume the menu banner
+                proc.stdin.write("8\n")           # OPNsense menu: 8 = Shell
+                await asyncio.sleep(0.6)
+                await _drain2(proc, 0.8)
+                proc.stdin.write("cat /conf/config.xml\n")
+                await asyncio.sleep(0.6)
+                out = await _drain2(proc, 2.5)
+                proc.stdin.write("exit\n")
+                return out
+
+        text = ""
         try:
-            text = await asyncio.wait_for(_go_bsd(), timeout=40)
+            text = await asyncio.wait_for(_go_exec(), timeout=40)
         except Exception:  # noqa: BLE001
             text = ""
-        if text.strip().startswith("<?xml") or "<opnsense>" in text or "<pfsense>" in text:
+        if not _looks_like_config(text):
+            try:
+                text = await asyncio.wait_for(_go_menu(), timeout=50)
+            except Exception:  # noqa: BLE001
+                pass
+        if _looks_like_config(text):
+            # trim anything before the XML declaration (menu echo, prompt)
+            i = text.find("<?xml")
+            if i > 0:
+                text = text[i:]
+            # trim anything after the closing root tag
+            for end in ("</opnsense>", "</pfsense>"):
+                j = text.rfind(end)
+                if j != -1:
+                    text = text[:j + len(end)]
+                    break
             return text.strip() + "\n"
-        # if the menu intercepted the exec, fall through to interactive attempt below
-        # (some installs allow it); otherwise the caller gets a clear empty result
+        # neither worked — return empty so the caller surfaces a clear failure
 
     pager_off = {"ios": "terminal length 0", "junos": "set cli screen-length 0",
                  "sonic": ""}.get(style, "terminal length 0")
