@@ -1855,7 +1855,7 @@ function AppInner({auth, onLogout}) {
           ) : view==="compliance" ? (
             <ComplianceView auth={auth} devices={devices}/>
           ) : view==="alerts" ? (
-            <AlertsView auth={auth} onOpenDevice={(id)=>{setView("inventory");setSelId(id);setTab("detail");setSelIface(null);}}/>
+            <AlertsView auth={auth} devices={devices} onOpenDevice={(id)=>{setView("inventory");setSelId(id);setTab("detail");setSelIface(null);}}/>
           ) : view==="topology" ? (
             <TopologyView devices={devices} onOpenDevice={(id)=>{setView("inventory");setSelId(id);setTab("detail");setSelIface(null);}}/>
           ) : view==="integrations" ? (
@@ -2424,18 +2424,159 @@ const SEED_CHANNELS = [
 
 function alertAgo(iso){ const s=(Date.now()-new Date(iso).getTime())/1000; if(s<60)return"just now"; if(s<3600)return`${(s/60)|0}m ago`; if(s<86400)return`${(s/3600)|0}h ago`; return`${(s/86400)|0}d ago`; }
 
-function AlertsView({auth, onOpenDevice}) {
+/* Rule editor modal — create/edit an alert rule. */
+function RuleEditor({rule, devices, onSave, onClose}) {
+  const [r, setR] = useState({...rule});
+  const set = (k,v)=>setR(p=>({...p,[k]:v}));
+  const isPreset = r.preset && r.preset!=="custom";
+  const PRESETS = [["custom","Custom (metric/threshold)"],["device_down","Device down"],["cpu_high","CPU high"],["mem_high","Memory high"]];
+  return (
+    <div className="overlay" onMouseDown={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div className="modal" style={{width:440}}>
+        <div className="modal-hdr"><div className="modal-title">{r.id?"Edit rule":"New alert rule"}</div></div>
+        <div className="modal-body">
+          <label className="flabel">Rule name</label>
+          <input className="finput" value={r.name||""} onChange={e=>set("name",e.target.value)} placeholder="e.g. Core switch CPU"/>
+          <label className="flabel">Type</label>
+          <select className="finput" value={r.preset||"custom"} onChange={e=>set("preset",e.target.value)}>
+            {PRESETS.map(([k,l])=><option key={k} value={k}>{l}</option>)}
+          </select>
+          {r.preset==="custom" ? <>
+            <div className="frow">
+              <div><label className="flabel">Metric</label>
+                <select className="finput" value={r.metric||"cpu"} onChange={e=>set("metric",e.target.value)}>
+                  <option value="cpu">CPU %</option><option value="mem">Memory %</option>
+                </select></div>
+              <div><label className="flabel">Operator</label>
+                <select className="finput" value={r.operator||">"} onChange={e=>set("operator",e.target.value)}>
+                  {[">","<",">=","<=","==","!="].map(o=><option key={o} value={o}>{o}</option>)}
+                </select></div>
+            </div>
+            <label className="flabel">Threshold</label>
+            <input className="finput" type="number" value={r.threshold??85} onChange={e=>set("threshold",e.target.value)}/>
+          </> : (r.preset==="cpu_high"||r.preset==="mem_high") && <>
+            <label className="flabel">Threshold %</label>
+            <input className="finput" type="number" value={r.threshold??85} onChange={e=>set("threshold",e.target.value)}/>
+          </>}
+          <div className="frow">
+            <div><label className="flabel">Severity</label>
+              <select className="finput" value={r.severity||"warning"} onChange={e=>set("severity",e.target.value)}>
+                <option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Info</option>
+              </select></div>
+            <div><label className="flabel">Hold for (sec)</label>
+              <input className="finput" type="number" value={r.duration||0} onChange={e=>set("duration",e.target.value)} title="Condition must hold this long before firing"/></div>
+          </div>
+          <label className="flabel">Scope (devices)</label>
+          <select className="finput" value={r.scope||""} onChange={e=>set("scope",e.target.value)}>
+            <option value="">All devices</option>
+            {devices.map(d=><option key={d.id} value={String(d.id)}>{d.name} ({d.ip})</option>)}
+          </select>
+          <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"#e6edf3",marginTop:4,cursor:"pointer"}}>
+            <input type="checkbox" checked={r.auto_resolve!==false} onChange={e=>set("auto_resolve",e.target.checked)}/>
+            Auto-resolve when condition clears
+          </label>
+        </div>
+        <div className="modal-footer">
+          <button className="mbtn cancel" onClick={onClose}>Cancel</button>
+          <button className="mbtn add" onClick={()=>onSave(r)} disabled={!r.name}>Save rule</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Channel editor modal — configure a notification destination. */
+function ChannelEditor({chan, onSave, onClose}) {
+  const [c, setC] = useState({...chan, config:{...(chan.config||{})}});
+  const set = (k,v)=>setC(p=>({...p,[k]:v}));
+  const setCfg = (k,v)=>setC(p=>({...p,config:{...p.config,[k]:v}}));
+  const [testMsg, setTestMsg] = useState(null);
+  const KINDS = [["webhook","Webhook"],["email","Email (SMTP)"],["syslog","Syslog"],["discord","Discord"]];
+
+  function test(){
+    setTestMsg({t:"...",ok:null});
+    api.testChannel({name:c.name||"test",kind:c.kind,enabled:true,config:c.config,min_severity:c.min_severity||"warning"})
+      .then(res=>setTestMsg({t:res.ok?"Test sent successfully":(res.error||"Test failed"),ok:res.ok}))
+      .catch(e=>setTestMsg({t:e.message||"Test failed",ok:false}));
+  }
+
+  return (
+    <div className="overlay" onMouseDown={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div className="modal" style={{width:460}}>
+        <div className="modal-hdr"><div className="modal-title">{c.id?"Edit channel":"New notification channel"}</div></div>
+        <div className="modal-body">
+          <label className="flabel">Channel name</label>
+          <input className="finput" value={c.name||""} onChange={e=>set("name",e.target.value)} placeholder="e.g. NOC email"/>
+          <label className="flabel">Type</label>
+          <div className="auth-tabs">
+            {KINDS.map(([k,l])=><button key={k} className={`auth-tab ${c.kind===k?"on":""}`} onClick={()=>set("kind",k)}>{l}</button>)}
+          </div>
+
+          {c.kind==="webhook" && <>
+            <label className="flabel">Webhook URL</label>
+            <input className="finput" value={c.config.url||""} onChange={e=>setCfg("url",e.target.value)} placeholder="https://hooks.example.com/..."/>
+          </>}
+          {c.kind==="discord" && <>
+            <label className="flabel">Discord webhook URL</label>
+            <input className="finput" value={c.config.url||""} onChange={e=>setCfg("url",e.target.value)} placeholder="https://discord.com/api/webhooks/..."/>
+          </>}
+          {c.kind==="syslog" && <>
+            <div className="frow">
+              <div><label className="flabel">Syslog host</label><input className="finput" value={c.config.host||""} onChange={e=>setCfg("host",e.target.value)} placeholder="10.0.0.50"/></div>
+              <div><label className="flabel">Port</label><input className="finput" value={c.config.port||"514"} onChange={e=>setCfg("port",e.target.value)}/></div>
+            </div>
+          </>}
+          {c.kind==="email" && <>
+            <div className="frow">
+              <div><label className="flabel">SMTP server</label><input className="finput" value={c.config.server||""} onChange={e=>setCfg("server",e.target.value)} placeholder="smtp.gmail.com"/></div>
+              <div><label className="flabel">Port</label><input className="finput" value={c.config.port||"587"} onChange={e=>setCfg("port",e.target.value)}/></div>
+            </div>
+            <label className="flabel">From address</label>
+            <input className="finput" value={c.config.from||""} onChange={e=>setCfg("from",e.target.value)} placeholder="switchdex@example.com"/>
+            <label className="flabel">To address(es)</label>
+            <input className="finput" value={c.config.to||""} onChange={e=>setCfg("to",e.target.value)} placeholder="noc@example.com"/>
+            <div className="frow">
+              <div><label className="flabel">Username</label><input className="finput" value={c.config.username||""} onChange={e=>setCfg("username",e.target.value)}/></div>
+              <div><label className="flabel">Password</label><input className="finput" type="password" value={c.config.password||""} onChange={e=>setCfg("password",e.target.value)} placeholder="••••••••"/></div>
+            </div>
+          </>}
+
+          <label className="flabel">Notify for severity ≥</label>
+          <select className="finput" value={c.min_severity||"warning"} onChange={e=>set("min_severity",e.target.value)}>
+            <option value="critical">Critical only</option><option value="warning">Warning and above</option><option value="info">All (info and above)</option>
+          </select>
+          <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"#e6edf3",marginTop:4,cursor:"pointer"}}>
+            <input type="checkbox" checked={c.enabled!==false} onChange={e=>set("enabled",e.target.checked)}/> Enabled
+          </label>
+          {testMsg && <div style={{marginTop:10,fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:testMsg.ok===true?"#3fb950":testMsg.ok===false?"#f85149":"#8b949e"}}>{testMsg.t}</div>}
+        </div>
+        <div className="modal-footer">
+          <button className="mbtn cancel" onClick={onClose}>Cancel</button>
+          <button className="mbtn" style={{background:"#21262d",border:"1px solid #30363d",color:"#e6edf3"}} onClick={test}>Send test</button>
+          <button className="mbtn add" onClick={()=>onSave(c)} disabled={!c.name}>Save channel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlertsView({auth, onOpenDevice, devices=[]}) {
   const [tab, setTab] = useState("active");      // active | history | rules | channels
   const [alerts, setAlerts] = useState(SEED_ALERTS);
   const [rules, setRules] = useState(SEED_RULES);
   const [channels, setChannels] = useState(SEED_CHANNELS);
+  const [editRule, setEditRule] = useState(null);     // rule object or {} for new
+  const [editChan, setEditChan] = useState(null);     // channel object or {} for new
   const isAdmin = auth.user.role === "admin";
+
+  function reloadRules(){ api.listRules().then(setRules).catch(()=>{}); }
+  function reloadChannels(){ api.listChannels().then(setChannels).catch(()=>{}); }
 
   useEffect(()=>{
     if (MOCK_MODE) return;
     api.listAlerts().then(setAlerts).catch(()=>{});
-    api.listRules().then(setRules).catch(()=>{});
-    api.listChannels().then(setChannels).catch(()=>{});
+    reloadRules();
+    reloadChannels();
   }, []);
 
   function ack(id){
@@ -2446,6 +2587,23 @@ function AlertsView({auth, onOpenDevice}) {
     if(!MOCK_MODE){ api.resolveAlert(id).then(()=>api.listAlerts().then(setAlerts)); return; }
     setAlerts(a=>a.map(x=>x.id===id?{...x,state:"resolved",resolvedBy:auth.user.username}:x));
   }
+  function saveRule(r){
+    const body = { name:r.name, enabled:r.enabled!==false, preset:r.preset||"custom",
+      metric:r.metric||"", operator:r.operator||">", threshold:Number(r.threshold)||0,
+      duration:Number(r.duration)||0, severity:r.severity||"warning", scope:r.scope||"",
+      auto_resolve:r.auto_resolve!==false };
+    const p = r.id ? api.updateRule(r.id, body) : api.addRule(body);
+    p.then(()=>{ setEditRule(null); reloadRules(); }).catch(e=>alert("Save failed: "+e.message));
+  }
+  function delRule(id){ if(confirm("Delete this rule?")) api.deleteRule(id).then(reloadRules).catch(()=>{}); }
+  function toggleRule(r){ api.updateRule(r.id, {...r, enabled:!r.enabled}).then(reloadRules).catch(()=>{}); }
+  function saveChan(c){
+    const body = { name:c.name, kind:c.kind||"webhook", enabled:c.enabled!==false,
+      config:c.config||{}, min_severity:c.min_severity||"warning" };
+    const p = c.id ? api.updateChannel(c.id, body) : api.addChannel(body);
+    p.then(()=>{ setEditChan(null); reloadChannels(); }).catch(e=>alert("Save failed: "+e.message));
+  }
+  function delChan(id){ if(confirm("Delete this channel?")) api.deleteChannel(id).then(reloadChannels).catch(()=>{}); }
 
   const active = alerts.filter(a=>a.state!=="resolved");
   const resolved = alerts.filter(a=>a.state==="resolved");
@@ -2517,16 +2675,20 @@ function AlertsView({auth, onOpenDevice}) {
           {rules.map(r=>(
             <div className="al-row" key={r.id}>
               <div className={`al-sev ${r.severity}`}/>
-              <div className="al-body">
+              <div className="al-body" style={{cursor:isAdmin?"pointer":"default"}} onClick={()=>isAdmin&&setEditRule(r)}>
                 <div className="al-title">{r.name}</div>
                 <div className="al-detail">{r.preset==="custom"?`${r.metric} ${r.operator} ${r.threshold}`:r.preset}{r.duration?` · held ${r.duration}s`:""}{r.auto_resolve?" · auto-resolve":""}</div>
               </div>
               <span className="al-meta" style={{width:90}}>{r.preset==="custom"?"custom":"preset"}{r.threshold?` · ${r.threshold}`:""}</span>
               <span className={`al-state ${r.severity==="critical"?"open":r.severity==="warning"?"acknowledged":"resolved"}`} style={{width:70,textAlign:"center"}}>{r.severity}</span>
-              <span className={`al-state ${r.enabled?"resolved":""}`} style={{background:r.enabled?undefined:"#21262d",color:r.enabled?undefined:"#8b949e"}}>{r.enabled?"on":"off"}</span>
+              {isAdmin
+                ? <span className={`al-state ${r.enabled?"resolved":""}`} style={{cursor:"pointer",background:r.enabled?undefined:"#21262d",color:r.enabled?undefined:"#8b949e"}} onClick={()=>toggleRule(r)} title="Toggle enabled">{r.enabled?"on":"off"}</span>
+                : <span className={`al-state ${r.enabled?"resolved":""}`} style={{background:r.enabled?undefined:"#21262d",color:r.enabled?undefined:"#8b949e"}}>{r.enabled?"on":"off"}</span>}
+              {isAdmin && <button className="al-btn" onClick={()=>setEditRule(r)} title="Edit">{IC.edit}</button>}
+              {isAdmin && <button className="al-btn resolve" onClick={()=>delRule(r.id)} title="Delete" style={{color:"#f85149"}}>{IC.x}</button>}
             </div>
           ))}
-          {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}}>{IC.plus} Add custom rule</button></div>}
+          {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}} onClick={()=>setEditRule({preset:"custom",metric:"cpu",operator:">",threshold:85,severity:"warning",duration:0,auto_resolve:true,enabled:true})}>{IC.plus} Add custom rule</button></div>}
         </div>
       )}
 
@@ -2535,16 +2697,21 @@ function AlertsView({auth, onOpenDevice}) {
           {channels.map(c=>(
             <div className="al-row" key={c.id}>
               <span className="chan-kind">{c.kind}</span>
-              <div className="al-body">
+              <div className="al-body" style={{cursor:isAdmin?"pointer":"default"}} onClick={()=>isAdmin&&setEditChan(c)}>
                 <div className="al-title">{c.name}</div>
                 <div className="al-detail">{c.config?.to||c.config?.url||c.config?.host||"configured"} · ≥ {c.min_severity}</div>
               </div>
               <span className={`al-state ${c.enabled?"resolved":""}`} style={{background:c.enabled?undefined:"#21262d",color:c.enabled?undefined:"#8b949e"}}>{c.enabled?"enabled":"off"}</span>
+              {isAdmin && <button className="al-btn" onClick={()=>setEditChan(c)} title="Edit">{IC.edit}</button>}
+              {isAdmin && <button className="al-btn resolve" onClick={()=>delChan(c.id)} title="Delete" style={{color:"#f85149"}}>{IC.x}</button>}
             </div>
           ))}
-          {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}}>{IC.plus} Add channel (email · webhook · syslog · Discord)</button></div>}
+          {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}} onClick={()=>setEditChan({kind:"webhook",min_severity:"warning",enabled:true,config:{}})}>{IC.plus} Add channel (email · webhook · syslog · Discord)</button></div>}
         </div>
       )}
+
+      {editRule && <RuleEditor rule={editRule} devices={devices} onSave={saveRule} onClose={()=>setEditRule(null)}/>}
+      {editChan && <ChannelEditor chan={editChan} onSave={saveChan} onClose={()=>setEditChan(null)}/>}
     </div>
   );
 }

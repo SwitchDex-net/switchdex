@@ -23,6 +23,9 @@ nornir-napalm==0.5.0
 nornir-netmiko==1.0.1
 asyncssh==2.18.0       # async interactive shell for the WebSocket SSH proxy
 
+# ── Notifications ──
+requests==2.32.3       # webhook / Discord notification POSTs
+
 # ── Auth ──
 bcrypt==4.2.1          # local password hashing
 pyjwt==2.10.1          # JWT issue/verify
