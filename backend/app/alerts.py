@@ -70,14 +70,18 @@ def _violations(rule, devices, metrics):
             # surfaced via configstore; placeholder hook for real wiring
             pass
         elif rule.preset == "custom":
-            val = m.get(rule.metric) if rule.metric in ("cpu", "mem") else getattr(d, rule.metric, None)
+            cve_metrics = ("cve_critical", "cve_high", "cve_total")
+            if rule.metric in ("cpu", "mem", *cve_metrics):
+                val = m.get(rule.metric, 0 if rule.metric in cve_metrics else None)
+            else:
+                val = getattr(d, rule.metric, None)
             if val is not None and _cmp(val, rule.operator, rule.threshold):
                 out.append((d, f"{rule.metric} {val} {rule.operator} {rule.threshold}"))
     return out
 
 
 async def _latest_metrics(session):
-    """device_id -> {cpu, mem} from the most recent sample of each."""
+    """device_id -> {cpu, mem, cve_critical, cve_high, cve_total} for rule eval."""
     out = {}
     for metric in ("cpu", "mem"):
         # latest ts per device for this metric
@@ -91,6 +95,22 @@ async def _latest_metrics(session):
         )).all()
         for did, val in rows:
             out.setdefault(did, {})[metric] = val
+    # CVE finding counts per device, so custom rules can target cve_critical etc.
+    try:
+        from .db import DeviceCve
+        rows = (await session.execute(
+            select(DeviceCve.device_id, DeviceCve.severity, func.count())
+            .group_by(DeviceCve.device_id, DeviceCve.severity)
+        )).all()
+        for did, sev, n in rows:
+            d = out.setdefault(did, {})
+            d["cve_total"] = d.get("cve_total", 0) + n
+            if sev == "CRITICAL":
+                d["cve_critical"] = d.get("cve_critical", 0) + n
+            elif sev == "HIGH":
+                d["cve_high"] = d.get("cve_high", 0) + n
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 

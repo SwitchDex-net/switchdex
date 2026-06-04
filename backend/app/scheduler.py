@@ -13,6 +13,7 @@ from . import configstore as store
 from .integrations import sync_one
 from . import alerts as alert_engine
 from . import telemetry as tel
+from . import cve as scanner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [scheduler] %(message)s")
 log = logging.getLogger("scheduler")
@@ -115,6 +116,15 @@ async def main():
     sched.add_job(discover_neighbors, "interval", minutes=15)
     # daily telemetry maintenance: downsample raw -> hourly, prune old data
     sched.add_job(tel.maintain, CronTrigger(hour=3, minute=30))
+
+    async def cve_sync_scan():
+        try:
+            res = await scanner.sync_nvd()
+            scan = await scanner.scan_fleet()
+            log.info("CVE sync: %s | scan: %s", res, scan)
+        except Exception as e:  # noqa: BLE001
+            log.error("CVE sync/scan failed: %s", e)
+    sched.add_job(cve_sync_scan, CronTrigger(hour=4, minute=0))   # daily, off-peak
     sched.start()
     log.info("scheduler started — daily backup %02d:%02d, controller poll 5m, alert eval 60s, telemetry %ds",
              settings.backup_hour, settings.backup_minute, settings.metrics_interval)

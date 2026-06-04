@@ -53,6 +53,9 @@ class Device(Base):
     backup_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     backup_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
     last_backup_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # CPE for vulnerability matching (auto-derived from vendor/platform/version,
+    # user-overridable when our mapping is wrong). Empty = not yet resolved.
+    cpe: Mapped[str] = mapped_column(String(256), default="")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     versions: Mapped[list["ConfigVersion"]] = relationship(
@@ -227,6 +230,39 @@ class DeviceBaseline(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     pinned_by: Mapped[str] = mapped_column(String(64), default="")
     pinned_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class Cve(Base):
+    """A CVE record synced from the NIST NVD API. We store the fields needed for
+    local matching + display: the CPE match criteria (as JSON), CVSS score and
+    severity, summary, and dates. Matching is done locally against this table so
+    scans are instant and resilient to NVD downtime."""
+    __tablename__ = "cves"
+
+    cve_id: Mapped[str] = mapped_column(String(32), primary_key=True)   # e.g. CVE-2024-20356
+    description: Mapped[str] = mapped_column(Text, default="")
+    cvss_score: Mapped[float] = mapped_column(default=0.0)
+    severity: Mapped[str] = mapped_column(String(16), default="")       # CRITICAL|HIGH|MEDIUM|LOW|NONE
+    # CPE applicability statements (configurations) as raw JSON; matched locally.
+    cpe_json: Mapped[str] = mapped_column(Text, default="[]")
+    published: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    last_modified: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
+class DeviceCve(Base):
+    """A confirmed match: this device's software is affected by this CVE.
+    Recomputed on each scan; carries a snapshot of severity/score for fast
+    display and so alert rules can count by severity without a join."""
+    __tablename__ = "device_cves"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    cve_id: Mapped[str] = mapped_column(String(32), index=True)
+    severity: Mapped[str] = mapped_column(String(16), default="")
+    cvss_score: Mapped[float] = mapped_column(default=0.0)
+    matched_cpe: Mapped[str] = mapped_column(String(256), default="")   # the device CPE that matched
+    first_seen: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)  # user can dismiss a finding
 
 
 class MetricSample(Base):

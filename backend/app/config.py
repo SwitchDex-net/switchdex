@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     default_ssh_username: str = "netops"
     default_ssh_password: str = ""
     default_snmp_community: str = "public"
+    nvd_api_key: str = ""        # optional NIST NVD API key (raises sync rate limit)
 
     backup_hour: int = 2
     backup_minute: int = 0

@@ -91,6 +91,12 @@ const api = {
   pinBaseline: (did, vid) => _req(`/compliance/baselines/${did}/pin/${vid}`, { method: "POST" }),
   unpinBaseline: (did) => _req(`/compliance/baselines/${did}`, { method: "DELETE" }),
   baselineDrift: (id) => _req(`/compliance/devices/${id}/drift`),
+  securitySummary: () => _req("/security/summary"),
+  securityDevice: (id) => _req(`/security/devices/${id}`),
+  securityScan: () => _req("/security/scan", { method: "POST" }),
+  securityScanDevice: (id) => _req(`/security/devices/${id}/scan`, { method: "POST" }),
+  securitySync: (full=false) => _req(`/security/sync?full=${full}`, { method: "POST", timeoutMs: 600000 }),
+  setDeviceCpe: (id, cpe) => _req(`/security/devices/${id}/cpe`, { method: "PUT", body: {cpe} }),
   metric: (id, metric, range="24h", label="") => _req(`/metrics/devices/${id}?metric=${metric}&range=${range}${label?`&label=${encodeURIComponent(label)}`:""}`),
   metricInterfaces: (id, range="24h") => _req(`/metrics/devices/${id}/interfaces?range=${range}`),
   metricSummary: (id) => _req(`/metrics/devices/${id}/summary`),
@@ -303,6 +309,7 @@ tbody tr:hover .row-acts{opacity:1;}
 /* ── Add device modal ── */
 .overlay{position:absolute;inset:0;background:rgba(1,4,9,.88);display:flex;align-items:center;justify-content:center;z-index:200;}
 .qv-scrim{position:absolute;inset:0;background:rgba(1,4,9,.35);z-index:210;}
+.sev-pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;white-space:nowrap;}
 .qv-drawer{position:absolute;top:0;right:0;bottom:0;width:340px;background:#0d1117;border-left:1px solid #30363d;box-shadow:-8px 0 24px rgba(0,0,0,.4);z-index:211;display:flex;flex-direction:column;animation:qv-in .18s ease-out;}
 @keyframes qv-in{from{transform:translateX(20px);opacity:.4;}to{transform:translateX(0);opacity:1;}}
 .qv-hdr{display:flex;align-items:center;gap:10px;padding:14px 14px 12px;border-bottom:1px solid #21262d;}
@@ -2152,7 +2159,7 @@ function AppInner({auth, onLogout}) {
       <div className="app">
         <div className="sidebar">
           <div className="sb-logo">{IC.layers}</div>
-          {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Compliance","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
+          {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
             <div key={lb} className={`sb-item ${view===vw?"active":""}`} title={lb}
               onClick={()=>{ if(["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry"].includes(vw)){ setView(vw); } }}>
               <SBIcon n={ic}/>{badge&&<span className="sb-badge"/>}
@@ -2162,7 +2169,7 @@ function AppInner({auth, onLogout}) {
 
         <div className="main">
           <div className="topbar">
-            <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Compliance</> : view==="telemetry" ? <>Telemetry</> : <>Device <span>Inventory</span></>}</span>
+            <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : <>Device <span>Inventory</span></>}</span>
             {view==="inventory" && <button className="tb-btn" onClick={()=>setShowAdd(true)}>{IC.plus} Add device</button>}
             <button className="tb-btn" onClick={doRefresh} disabled={refreshing} title="Reload device data and metrics" style={{minWidth:92,justifyContent:"center"}}>
               {refreshing
@@ -2180,7 +2187,7 @@ function AppInner({auth, onLogout}) {
           ) : view==="telemetry" ? (
             <TelemetryView devices={devices} initialDeviceId={selId}/>
           ) : view==="compliance" ? (
-            <ComplianceView auth={auth} devices={devices}/>
+            <SecurityView auth={auth} devices={devices} onOpenDevice={openQuickView}/>
           ) : view==="alerts" ? (
             <AlertsView auth={auth} devices={devices} onOpenDevice={openQuickView}/>
           ) : view==="topology" ? (
@@ -2599,6 +2606,115 @@ function mockEvaluate(devices, policies) {
 }
 
 const SEED_POLICIES = [];   // empty by default — admin writes all rules
+
+const SEV_COLOR = { CRITICAL:"#f85149", HIGH:"#e3b341", MEDIUM:"#58a6ff", LOW:"#8b949e" };
+
+// Security / vulnerability scanning view — CVE matching from the NVD.
+function SecurityView({auth, devices, onOpenDevice}) {
+  const isAdmin = auth.user.role === "admin";
+  const [data, setData] = useState(null);       // summary {devices, cve_db, totals}
+  const [sel, setSel] = useState(null);          // selected device id for detail
+  const [findings, setFindings] = useState(null);
+  const [busy, setBusy] = useState("");          // "scan" | "sync" | ""
+  const [msg, setMsg] = useState(null);
+
+  function load(){ api.securitySummary().then(setData).catch(()=>setData({devices:[],cve_db:{},totals:{}})); }
+  useEffect(()=>{ if(!MOCK_MODE) load(); }, []);
+
+  function openDevice(id){
+    setSel(id); setFindings(null);
+    api.securityDevice(id).then(r=>setFindings(r.findings||[])).catch(()=>setFindings([]));
+  }
+  function rescan(){
+    setBusy("scan"); setMsg(null);
+    api.securityScan().then(r=>{ setMsg(`Scan complete — ${r.total_findings} findings across ${r.devices} devices`); load(); if(sel) openDevice(sel); })
+      .catch(e=>setMsg("Scan failed: "+e.message)).finally(()=>setBusy(""));
+  }
+  function syncNvd(){
+    setBusy("sync"); setMsg("Pulling latest CVEs from NVD — this can take a few minutes…");
+    api.securitySync(false).then(r=>{ setMsg(`Synced ${r.sync?.stored||0} CVEs · ${r.scan?.total_findings||0} findings`); load(); })
+      .catch(e=>setMsg("Sync failed: "+e.message)).finally(()=>setBusy(""));
+  }
+
+  if (!data) return <div className="cfg-loading"><span className="cfg-spin"/> Loading security overview…</div>;
+
+  const t = data.totals || {};
+  const dbCount = data.cve_db?.count || 0;
+
+  // ── device detail (CVE list) ──
+  if (sel != null) {
+    const dev = (data.devices||[]).find(d=>d.id===sel) || {};
+    return (
+      <div className="fleet-wrap">
+        <div className="ed-back" onClick={()=>{setSel(null);setFindings(null);}}>{IC.back} Back to overview</div>
+        <div style={{marginBottom:14}}>
+          <div className="ed-title" style={{fontSize:16}}>{dev.name} — vulnerabilities</div>
+          <div className="dsub" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>{dev.cpe || "no CPE mapping — device not scanned"}</div>
+        </div>
+        {findings===null ? <div className="cfg-loading"><span className="cfg-spin"/> Loading…</div>
+         : findings.length===0 ? <div className="cfg-empty">No known CVEs match the software version on this device. {dev.cpe?"":"(No CPE could be derived — vulnerability scanning needs a recognized vendor and version.)"}</div>
+         : (
+          <div className="fleet-tbl-card">
+            <div className="fleet-tbl-hdr"><span className="t">{findings.length} matched CVE{findings.length===1?"":"s"}</span><span style={{fontSize:11,color:"#8b949e"}}>tight match · exact CPE + version range</span></div>
+            {findings.map(f=>(
+              <a key={f.cve_id} href={f.url} target="_blank" rel="noreferrer" className="fleet-row" style={{textDecoration:"none"}}>
+                <span style={{width:64,flexShrink:0,fontWeight:600,fontSize:11,color:SEV_COLOR[f.severity]||"#8b949e"}}>{f.severity||"—"}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div className="fr-name" style={{fontFamily:"'IBM Plex Mono',monospace"}}>{f.cve_id} <span style={{color:"#6e7681",fontWeight:400}}>CVSS {f.cvss_score||"—"}</span></div>
+                  <div className="fr-meta" style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.description||""}</div>
+                </div>
+                <span style={{color:"#58a6ff",fontSize:12,flexShrink:0}}>NVD ›</span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── overview ──
+  return (
+    <div className="fleet-wrap">
+      <div className="fleet-kpis">
+        <div className="fkpi"><div className="fkpi-label">Critical</div><div className="fkpi-val" style={{color:t.critical?"#f85149":"#e6edf3"}}>{t.critical||0}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>across fleet</div></div>
+        <div className="fkpi"><div className="fkpi-label">High</div><div className="fkpi-val" style={{color:t.high?"#e3b341":"#e6edf3"}}>{t.high||0}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>across fleet</div></div>
+        <div className="fkpi"><div className="fkpi-label">Total findings</div><div className="fkpi-val">{t.total||0}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>all severities</div></div>
+        <div className="fkpi"><div className="fkpi-label">CVE database</div><div className="fkpi-val">{dbCount.toLocaleString()}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>{data.cve_db?.newest?`newest ${tsAgo(Date.parse(data.cve_db.newest))}`:"not synced yet"}</div></div>
+      </div>
+
+      <div className="sched-bar">
+        <div style={{width:34,height:34,borderRadius:8,background:"#1a2e3e",color:"#58a6ff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{IC.shield}</div>
+        <div className="sched-info">
+          <div className="sched-title">Vulnerability scanning — NIST NVD</div>
+          <div className="sched-sub">Daily CVE sync + match against device software versions (exact CPE). {msg && <span style={{color:msg.includes("fail")?"#f85149":"#3fb950",marginLeft:4}}>{msg}</span>}</div>
+        </div>
+        {isAdmin && <button className="cfg-btn" onClick={rescan} disabled={!!busy}>{busy==="scan"?<><span style={{display:"inline-flex",animation:"sdx-spin 0.7s linear infinite"}}>{IC.clock}</span> Scanning…</>:<>{IC.refresh} Re-scan</>}</button>}
+        {isAdmin && <button className="cfg-btn primary" onClick={syncNvd} disabled={!!busy}>{busy==="sync"?<><span style={{display:"inline-flex",animation:"sdx-spin 0.7s linear infinite"}}>{IC.clock}</span> Syncing…</>:<>{IC.download} Sync NVD now</>}</button>}
+      </div>
+
+      <div className="fleet-tbl-card">
+        <div className="fleet-tbl-hdr"><span className="t">Per-device vulnerabilities</span><span style={{fontSize:11,color:"#8b949e"}}>click a device for its CVE list</span></div>
+        {(data.devices||[]).length===0 ? <div className="cfg-empty">No devices.</div>
+         : data.devices.map(d=>(
+          <div key={d.id} className="fleet-row" onClick={()=>openDevice(d.id)}>
+            <DevIcon type={d.type} size={16}/>
+            <div style={{flex:1,minWidth:0}}>
+              <div className="fr-name">{d.name}</div>
+              <div className="fr-meta" style={{fontFamily:"'IBM Plex Mono',monospace"}}>{d.cpe || "no CPE — not scanned"}</div>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
+              {d.critical>0 && <span className="sev-pill" style={{background:"#f8514922",color:"#f85149"}}>{d.critical} crit</span>}
+              {d.high>0 && <span className="sev-pill" style={{background:"#e3b34122",color:"#e3b341"}}>{d.high} high</span>}
+              {d.total===0 && d.cpe && <span style={{fontSize:12,color:"#3fb950"}}>clear</span>}
+              {!d.cpe && <span style={{fontSize:12,color:"#6e7681"}}>—</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 function ComplianceView({auth, devices}) {
   const [tab, setTab] = useState("dashboard");   // dashboard | policies

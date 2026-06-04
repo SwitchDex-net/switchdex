@@ -31,8 +31,8 @@ Device credentials live on the server, never in the browser.
 - **Config archive** — git-backed running-config history with diffs, change detection, and restore
 - **Topology** — auto-generated network map (force-directed or layered) from neighbor data
 - **Alerting** — preset + custom rules, full open→ack→resolve lifecycle, with email / webhook / syslog / Discord notifications
-- **Compliance** — policy checks (required/forbidden config) plus per-device golden-baseline drift
-- **Telemetry** — time-series CPU, memory, reachability, and per-interface throughput, with inline sparklines and a full charts view
+- **Security** — vulnerability scanning that matches each device's software version against CVEs synced from the NIST NVD, with per-device findings by severity and links to NVD; CVE counts can drive custom alert rules
+- **Telemetry** — time-series CPU, memory, and uptime collected over SNMP, with a charts view and hover tooltips; controller-managed devices are sampled on a slower cadence to respect their API limits
 - **Closed ecosystems** — connect UniFi and Omada controllers to pull their devices into inventory as **read-only**, clearly marked, with a one-click deep-link back to the vendor controller for changes
 - **Auth** — local accounts + optional LDAP / Active Directory, role-based access, persistent sessions across refresh, and a forced password change for the break-glass admin on first login
 
