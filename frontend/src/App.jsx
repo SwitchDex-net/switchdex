@@ -967,6 +967,16 @@ function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs}) {
   const mem = m.mem != null ? Math.round(m.mem) : null;
   const uptime = m.uptime || (d.uptime && d.uptime !== "—" ? d.uptime : "—");
   const ro = d.capability === "readonly";
+  // recent config backups (read-only display) — skip for controller devices
+  const [backups, setBackups] = useState(null);   // null=loading, []=none
+  useEffect(() => {
+    if (MOCK_MODE || ro) { setBackups([]); return; }
+    let alive = true;
+    api.listConfigs(d.id)
+      .then(rows => { if (alive) setBackups((rows||[]).map(v=>({...v, ts:Date.parse(v.ts)})).sort((a,b)=>b.ts-a.ts)); })
+      .catch(() => { if (alive) setBackups([]); });
+    return () => { alive = false; };
+  }, [d.id]);
   return (
     <>
       {/* click-away scrim — transparent so the page stays visible behind it */}
@@ -993,6 +1003,30 @@ function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs}) {
             {d.location && <div><span style={{color:"#6e7681"}}>Location:</span> {d.location}</div>}
             {d.os && <div><span style={{color:"#6e7681"}}>OS:</span> {d.os}</div>}
           </div>
+
+          {!ro && (
+            <div style={{marginTop:16}}>
+              <div className="sec-title" style={{marginBottom:8}}>Recent config backups</div>
+              {backups === null ? (
+                <div style={{fontSize:12,color:"#8b949e"}}>Loading…</div>
+              ) : backups.length === 0 ? (
+                <div style={{fontSize:12,color:"#6e7681"}}>No backups yet for this device.</div>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {backups.slice(0,5).map((v,i)=>(
+                    <div key={v.id||i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",background:"#161b22",border:"1px solid #21262d",borderRadius:6}}>
+                      <span style={{color:i===0?"#3fb950":"#6e7681",flexShrink:0}}>{IC.clock}</span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:12,color:"#e6edf3"}}>{tsAgo(v.ts)}{i===0 && <span style={{color:"#3fb950",marginLeft:6,fontSize:11}}>latest</span>}</div>
+                        <div style={{fontSize:11,color:"#6e7681",fontFamily:"'IBM Plex Mono',monospace"}}>{tsFull(v.ts)} · #{v.hash}{v.trigger?` · ${v.trigger}`:""}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {backups.length>5 && <div style={{fontSize:11,color:"#6e7681",textAlign:"center"}}>+{backups.length-5} older version{backups.length-5>1?"s":""}</div>}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="qv-footer" style={{display:"flex",gap:8}}>
           {onOpenConfigs && d.capability!=="readonly" && <button className="mbtn cancel" style={{flex:1}} onClick={onOpenConfigs}>Config archive</button>}
