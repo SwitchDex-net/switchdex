@@ -41,6 +41,36 @@ async def backup_fleet():
              len(ids), changed, settings.backup_concurrency)
 
 
+async def discover_neighbors():
+    """Discover LLDP/CDP neighbors for SNMP-managed devices and persist them as
+    neighbors_json, so the topology map can draw real links. Topology changes
+    slowly, so this runs infrequently."""
+    import json as _json
+    from . import devices as drv
+    async with SessionLocal() as s:
+        devs = (await s.execute(
+            select(Device).where(Device.capability == "manage"))).scalars().all()
+        rows = [(d.id, d.ip, d.snmp_community) for d in devs]
+    total = 0
+    for did, ip, community in rows:
+        community = community or settings.default_snmp_community
+        if not (ip and community):
+            continue
+        try:
+            neighbors = await asyncio.to_thread(drv.lldp_neighbors, ip, community)
+        except Exception as e:  # noqa: BLE001
+            log.info("neighbor discovery failed for %s: %s", ip, e)
+            continue
+        async with SessionLocal() as s:
+            d = await s.get(Device, did)
+            if d:
+                d.neighbors_json = _json.dumps(neighbors)
+                await s.commit()
+        total += len(neighbors)
+        log.info("device %s (%s): %d neighbors", did, ip, len(neighbors))
+    log.info("neighbor discovery complete: %d devices, %d total neighbors", len(rows), total)
+
+
 async def poll_controllers():
     """Refresh read-only telemetry from UniFi/Omada controllers."""
     async with SessionLocal() as s:
@@ -67,11 +97,16 @@ async def main():
     sched.add_job(alert_engine.evaluate, "interval", seconds=60)
     # sample device telemetry on the configured interval
     sched.add_job(tel.collect_once, "interval", seconds=settings.metrics_interval)
+
+    sched.add_job(discover_neighbors, "interval", minutes=15)
     # daily telemetry maintenance: downsample raw -> hourly, prune old data
     sched.add_job(tel.maintain, CronTrigger(hour=3, minute=30))
     sched.start()
     log.info("scheduler started — daily backup %02d:%02d, controller poll 5m, alert eval 60s, telemetry %ds",
              settings.backup_hour, settings.backup_minute, settings.metrics_interval)
+    # kick off an initial neighbor discovery so the topology map populates
+    # without waiting for the first 15-minute interval
+    asyncio.create_task(discover_neighbors())
     # run forever
     while True:
         await asyncio.sleep(3600)

@@ -68,6 +68,7 @@ const api = {
   deleteController: (id) => _req(`/integrations/${id}`, { method: "DELETE" }),
   deviceMetrics: (id) => _req(`/integrations/devices/${id}/metrics`),
   getTopology: () => _req("/topology"),
+  discoverTopology: () => _req("/topology/discover", { method: "POST" }),
   listAlerts: (state="") => _req(`/alerts${state?`?state=${state}`:""}`),
   alertSummary: () => _req("/alerts/summary"),
   ackAlert: (id) => _req(`/alerts/${id}/ack`, { method: "POST" }),
@@ -2746,6 +2747,8 @@ const ROLE_COLOR = { core:"#58a6ff", distribution:"#3fb950", access:"#bc8cff", e
 
 function TopologyView({devices, onOpenDevice}) {
   const [layout, setLayout] = useState("force");   // force | layered
+  const [discovering, setDiscovering] = useState(false);
+  const [discMsg, setDiscMsg] = useState(null);
   const [graph, setGraph] = useState(()=>MOCK_MODE?buildMockGraph(devices):{nodes:[],links:[]});
   const [pos, setPos] = useState({});               // id -> {x,y}
   const [hover, setHover] = useState(null);
@@ -2758,6 +2761,19 @@ function TopologyView({devices, onOpenDevice}) {
     if (MOCK_MODE) { setGraph(buildMockGraph(devices)); return; }
     api.getTopology().then(setGraph).catch(()=>setGraph({nodes:[],links:[]}));
   }, [devices]);
+
+  function discover(){
+    if (discovering) return;
+    setDiscovering(true); setDiscMsg(null);
+    api.discoverTopology()
+      .then(res=>{
+        const total = (res.results||[]).reduce((a,r)=>a+(r.neighbors||0),0);
+        setDiscMsg(`Found ${total} neighbor link${total===1?"":"s"} across ${(res.results||[]).length} devices`);
+        return api.getTopology().then(setGraph);
+      })
+      .catch(e=>setDiscMsg("Discovery failed: "+(e.message||"error")))
+      .finally(()=>setDiscovering(false));
+  }
 
   // layered positions: rows by role
   function layeredPositions(nodes) {
@@ -2811,6 +2827,11 @@ function TopologyView({devices, onOpenDevice}) {
           <button className={layout==="layered"?"on":""} onClick={()=>setLayout("layered")}>Layered</button>
         </div>
         <span style={{fontSize:12,color:"#8b949e"}}>{graph.nodes.length} devices · {graph.links.length} links</span>
+        {!MOCK_MODE && <button className="fbtn" onClick={discover} disabled={discovering} style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{display:"inline-flex",animation:discovering?"sdx-spin 0.7s linear infinite":"none"}}>{IC.refresh}</span>
+          {discovering?"Discovering…":"Discover neighbors"}
+        </button>}
+        {discMsg && <span style={{fontSize:11,color:"#8b949e",fontFamily:"'IBM Plex Mono',monospace"}}>{discMsg}</span>}
         <div className="topo-legend">
           {Object.entries(ROLE_COLOR).map(([r,c])=>(<div key={r} className="topo-leg"><span className="topo-leg-dot" style={{background:c}}/>{r}</div>))}
           <div className="topo-leg"><span className="topo-leg-dot" style={{background:"#21262d",border:"1.5px dashed #8b949e"}}/>read-only</div>

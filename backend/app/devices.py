@@ -97,6 +97,41 @@ def _snmp_walk(ip, community, oid, version="2c"):
     return out
 
 
+def _snmp_walk_full(ip, community, base_oid, version="2c"):
+    """Like _snmp_walk but the key is the FULL index suffix after base_oid
+    (everything past the base), needed for compound-index tables such as the
+    LLDP remote table (indexed by timeMark.localPort.remIndex)."""
+    import subprocess
+    out = {}
+    base = base_oid.lstrip(".")
+    try:
+        r = subprocess.run(
+            ["snmpwalk", "-v", version, "-c", community, "-Oqn", "-t", "2", "-r", "1",
+             f"{ip}:161", base_oid],
+            capture_output=True, text=True, timeout=20,
+        )
+        if r.returncode != 0:
+            return out
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            full_oid, val = parts
+            full = full_oid.lstrip(".")
+            if full.startswith(base + "."):
+                suffix = full[len(base) + 1:]
+            else:
+                # fall back to trailing token
+                suffix = full.split(".")[-1]
+            out[suffix] = val.strip().strip('"')
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
 def snmp_interfaces(ip, community, version="2c"):
     """Enumerate interfaces from the device's IF-MIB via SNMP.
     Returns {ifname: {speed, status, desc, mode, vlan, ip, shutdown, kind}}.
@@ -222,32 +257,87 @@ def snmp_metrics(ip, community, version="2c"):
         pass
 
     return out
-    import asyncio as _aio
-    import asyncssh
 
-    LEGACY_KEX = ["diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1",
-                  "diffie-hellman-group14-sha256", "curve25519-sha256",
-                  "ecdh-sha2-nistp256", "diffie-hellman-group16-sha512"]
-    LEGACY_HKEY = ["ssh-rsa", "rsa-sha2-256", "rsa-sha2-512", "ssh-ed25519",
-                   "ecdsa-sha2-nistp256"]
 
-    async def _go():
-        async with asyncssh.connect(ip, port=port, username=user, password=pw,
-                                    known_hosts=None, kex_algs=LEGACY_KEX,
-                                    server_host_key_algs=LEGACY_HKEY,
-                                    connect_timeout=8) as conn:
-            r = await conn.run("show version", check=False, timeout=10)
-            return (r.stdout or "") + (r.stderr or "")
+def lldp_neighbors(ip, community, version="2c"):
+    """Discover directly-connected neighbors via LLDP-MIB (and CDP as fallback)
+    over SNMP. Returns a list of {peer_name, peer_ip, local_if, peer_if}.
+    Topology matches peers to known devices by peer_ip, so the management
+    address is the important field.
 
-    try:
-        out = _aio.run(_aio.wait_for(_go(), timeout=15))
-    except Exception as e:  # noqa: BLE001
-        return {"reachable": False, "error": f"SSH probe failed: {e}"}
-    if not out.strip():
-        return {"reachable": False, "error": "SSH connected but 'show version' returned nothing."}
-    fp = _classify(out, ip)
-    fp["reachable"] = True
-    return fp
+    LLDP remote table (lldpRemTable, 1.0.8802.1.1.2.1.4.1.1) is indexed by
+    timeMark.localPortNum.remIndex; the peer management IP lives in a separate
+    table (lldpRemManAddrTable). We key everything by localPortNum.remIndex."""
+    LLDP_REM = "1.0.8802.1.1.2.1.4.1.1"
+    REM_PORTID  = LLDP_REM + ".7"   # lldpRemPortId (peer's port)
+    REM_PORTDSC = LLDP_REM + ".8"   # lldpRemPortDesc
+    REM_SYSNAME = LLDP_REM + ".9"   # lldpRemSysName (peer hostname)
+    REM_MANADDR = "1.0.8802.1.1.2.1.4.2.1"  # lldpRemManAddrTable
+    LLDP_LOC_PORT = "1.0.8802.1.1.2.1.3.7.1.3"  # lldpLocPortId / desc
+
+    def _pp_key(suffix):
+        # suffix like "timeMark.localPort.remIndex" -> "localPort.remIndex"
+        parts = suffix.split(".")
+        return ".".join(parts[1:3]) if len(parts) >= 3 else suffix
+
+    sysnames = _snmp_walk_full(ip, community, REM_SYSNAME, version)
+    portids  = _snmp_walk_full(ip, community, REM_PORTID, version)
+    portdscs = _snmp_walk_full(ip, community, REM_PORTDSC, version)
+    locports = _snmp_walk_full(ip, community, LLDP_LOC_PORT, version)
+
+    # management-address table: index suffix encodes localPort.remIndex + addr
+    # subtype/len/octets. The trailing dotted octets ARE the peer IP for IPv4.
+    manaddrs = _snmp_walk_full(ip, community, REM_MANADDR + ".1", version)  # lldpRemManAddrIfSubtype keyed by full idx
+    # derive peer IP per localPort.remIndex from the man-addr index itself
+    peer_ip_by_pp = {}
+    for suffix in list(sysnames.keys()):
+        peer_ip_by_pp.setdefault(_pp_key(suffix), "")
+    for full_idx in manaddrs.keys():
+        # full_idx = localPort.remIndex.addrSubtype.addrLen.o1.o2.o3.o4
+        parts = full_idx.split(".")
+        if len(parts) >= 7:
+            pp = ".".join(parts[0:2])             # localPort.remIndex
+            subtype = parts[2]
+            if subtype == "1":                    # IPv4
+                octets = parts[-4:]
+                peer_ip_by_pp[pp] = ".".join(octets)
+
+    neighbors = []
+    for suffix, sysname in sysnames.items():
+        pp = _pp_key(suffix)
+        local_port_num = pp.split(".")[0]
+        neighbors.append({
+            "peer_name": sysname,
+            "peer_ip": peer_ip_by_pp.get(pp, ""),
+            "local_if": locports.get(local_port_num, local_port_num),
+            "peer_if": portids.get(suffix) or portdscs.get(suffix) or "",
+        })
+
+    # CDP fallback (Cisco) if LLDP returned nothing
+    if not neighbors:
+        CDP = "1.3.6.1.4.1.9.9.23.1.2.1.1"
+        cdp_name = _snmp_walk_full(ip, community, CDP + ".6", version)   # cdpCacheDeviceId
+        cdp_addr = _snmp_walk_full(ip, community, CDP + ".4", version)   # cdpCacheAddress (hex)
+        cdp_port = _snmp_walk_full(ip, community, CDP + ".7", version)   # cdpCacheDevicePort
+        for idx, name in cdp_name.items():
+            ipaddr = ""
+            raw = cdp_addr.get(idx, "")
+            # cdpCacheAddress often returned as hex "0A 01 01 02" -> 10.1.1.2
+            hx = raw.replace("0x", "").replace(" ", "").replace(":", "")
+            if len(hx) == 8:
+                try:
+                    ipaddr = ".".join(str(int(hx[i:i+2], 16)) for i in range(0, 8, 2))
+                except ValueError:
+                    ipaddr = ""
+            local_port_num = idx.split(".")[0]
+            neighbors.append({
+                "peer_name": name,
+                "peer_ip": ipaddr,
+                "local_if": local_port_num,
+                "peer_if": cdp_port.get(idx, ""),
+            })
+
+    return neighbors
 
 
 def _speed_token(sp, mapping):

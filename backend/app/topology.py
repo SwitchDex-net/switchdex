@@ -61,6 +61,39 @@ async def get_topology(_: dict = Depends(get_current_user)):
     return {"nodes": nodes, "links": links}
 
 
+@router.post("/discover")
+async def discover_now(_: dict = Depends(get_current_user)):
+    """Trigger LLDP/CDP neighbor discovery immediately for all SNMP-managed
+    devices and persist results. Returns a per-device neighbor count."""
+    import json as _json
+    from . import devices as drv
+    async with SessionLocal() as s:
+        devs = (await s.execute(
+            select(Device).where(Device.capability == "manage"))).scalars().all()
+        rows = [(d.id, d.name, d.ip, d.snmp_community) for d in devs]
+
+    results = []
+    for did, name, ip, community in rows:
+        community = community or settings.default_snmp_community
+        if not (ip and community):
+            results.append({"device": name, "neighbors": 0, "skipped": "no SNMP community"})
+            continue
+        import asyncio as _aio
+        try:
+            neighbors = await _aio.to_thread(drv.lldp_neighbors, ip, community)
+        except Exception as e:  # noqa: BLE001
+            results.append({"device": name, "neighbors": 0, "error": str(e)})
+            continue
+        async with SessionLocal() as s:
+            d = await s.get(Device, did)
+            if d:
+                d.neighbors_json = _json.dumps(neighbors)
+                await s.commit()
+        results.append({"device": name, "neighbors": len(neighbors),
+                        "peers": [n.get("peer_name", "") for n in neighbors]})
+    return {"results": results}
+
+
 def _infer_links(devices):
     """Sim-mode heuristic: connect access→distribution→core by role, so the
     map shows a believable hierarchy without real LLDP data."""
