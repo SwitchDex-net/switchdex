@@ -24,3 +24,9 @@ async def device_interfaces(device_id: int, range: str = "24h",
 @router.get("/devices/{device_id}/summary")
 async def device_summary(device_id: int, _: dict = Depends(get_current_user)):
     return await tel.latest_summary(device_id)
+
+
+@router.get("/fleet-summary")
+async def fleet_summary(_: dict = Depends(get_current_user)):
+    """Latest cpu/mem/uptime for all devices, keyed by device id."""
+    return await tel.fleet_summary()

@@ -16,9 +16,9 @@ import json
 import datetime as dt
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
-from .db import SessionLocal, Device, AlertRule, Alert, NotifyChannel
+from .db import SessionLocal, Device, AlertRule, Alert, NotifyChannel, MetricSample
 from . import notify
 
 log = logging.getLogger("alerts")
@@ -40,8 +40,11 @@ def _cmp(value, op, threshold):
             "<=": v <= threshold, "==": v == threshold, "!=": v != threshold}.get(op, False)
 
 
-def _violations(rule, devices):
-    """Return list of (device, detail) currently violating this rule."""
+def _violations(rule, devices, metrics):
+    """Return list of (device, detail) currently violating this rule.
+    `metrics` maps device_id -> {"cpu": float, "mem": float} from the latest
+    samples, so threshold rules evaluate against live telemetry, not the stale
+    device row (CPU/mem are not stored on the device record)."""
     out = []
     scope_ids = set()
     if rule.scope:
@@ -50,23 +53,44 @@ def _violations(rule, devices):
     for d in devices:
         if scope_ids and d.id not in scope_ids:
             continue
+        m = metrics.get(d.id, {})
 
         if rule.preset == "device_down":
             if d.status == "down":
                 out.append((d, f"{d.name} ({d.ip}) is unreachable"))
         elif rule.preset == "cpu_high":
-            if d.status != "down" and _cmp(d.cpu if hasattr(d, "cpu") else 0, ">", rule.threshold or 85):
-                out.append((d, f"CPU {getattr(d,'cpu',0)}% exceeds {rule.threshold or 85}%"))
+            cpu = m.get("cpu")
+            if d.status != "down" and cpu is not None and _cmp(cpu, ">", rule.threshold or 85):
+                out.append((d, f"CPU {round(cpu)}% exceeds {rule.threshold or 85}%"))
         elif rule.preset == "mem_high":
-            if d.status != "down" and _cmp(getattr(d, "mem", 0), ">", rule.threshold or 85):
-                out.append((d, f"Memory {getattr(d,'mem',0)}% exceeds {rule.threshold or 85}%"))
+            mem = m.get("mem")
+            if d.status != "down" and mem is not None and _cmp(mem, ">", rule.threshold or 85):
+                out.append((d, f"Memory {round(mem)}% exceeds {rule.threshold or 85}%"))
         elif rule.preset == "backup_failed":
             # surfaced via configstore; placeholder hook for real wiring
             pass
         elif rule.preset == "custom":
-            val = getattr(d, rule.metric, None)
+            val = m.get(rule.metric) if rule.metric in ("cpu", "mem") else getattr(d, rule.metric, None)
             if val is not None and _cmp(val, rule.operator, rule.threshold):
                 out.append((d, f"{rule.metric} {val} {rule.operator} {rule.threshold}"))
+    return out
+
+
+async def _latest_metrics(session):
+    """device_id -> {cpu, mem} from the most recent sample of each."""
+    out = {}
+    for metric in ("cpu", "mem"):
+        # latest ts per device for this metric
+        sub = (select(MetricSample.device_id, func.max(MetricSample.ts).label("mx"))
+               .where(MetricSample.metric == metric)
+               .group_by(MetricSample.device_id)).subquery()
+        rows = (await session.execute(
+            select(MetricSample.device_id, MetricSample.value)
+            .join(sub, (MetricSample.device_id == sub.c.device_id) & (MetricSample.ts == sub.c.mx))
+            .where(MetricSample.metric == metric)
+        )).all()
+        for did, val in rows:
+            out.setdefault(did, {})[metric] = val
     return out
 
 
@@ -77,12 +101,13 @@ async def evaluate():
         devices = (await s.execute(select(Device))).scalars().all()
         channels = (await s.execute(select(NotifyChannel))).scalars().all()
         dev_by_id = {d.id: d for d in devices}
+        metrics = await _latest_metrics(s)
 
         now = dt.datetime.utcnow()
         currently_true = set()
 
         for rule in rules:
-            for dev, detail in _violations(rule, devices):
+            for dev, detail in _violations(rule, devices, metrics):
                 key = _dedup(rule.id, dev.id)
                 currently_true.add(key)
 

@@ -215,3 +215,29 @@ async def latest_summary(device_id: int):
         else:
             out["uptime"] = None
     return out
+
+
+async def fleet_summary():
+    """Latest cpu/mem/uptime for every device, in one pass.
+    Returns {device_id: {cpu, mem, uptime, uptime_secs}} for the inventory table."""
+    out = {}
+    async with SessionLocal() as s:
+        for metric in ("cpu", "mem", "uptime"):
+            sub = (select(MetricSample.device_id, func.max(MetricSample.ts).label("mx"))
+                   .where(MetricSample.metric == metric)
+                   .group_by(MetricSample.device_id)).subquery()
+            rows = (await s.execute(
+                select(MetricSample.device_id, MetricSample.value)
+                .join(sub, (MetricSample.device_id == sub.c.device_id) & (MetricSample.ts == sub.c.mx))
+                .where(MetricSample.metric == metric)
+            )).all()
+            for did, val in rows:
+                d = out.setdefault(did, {})
+                if metric == "uptime":
+                    if val and val > 0:
+                        secs = int(val)
+                        d["uptime_secs"] = secs
+                        d["uptime"] = f"{secs // 86400}d {(secs % 86400) // 3600}h"
+                else:
+                    d[metric] = round(val, 1) if val is not None else None
+    return out

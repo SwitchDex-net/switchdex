@@ -73,6 +73,15 @@ const api = {
   ackAlert: (id) => _req(`/alerts/${id}/ack`, { method: "POST" }),
   resolveAlert: (id) => _req(`/alerts/${id}/resolve`, { method: "POST" }),
   listRules: () => _req("/alerts/rules"),
+  addRule: (b) => _req("/alerts/rules", { method: "POST", body: b }),
+  updateRule: (id, b) => _req(`/alerts/rules/${id}`, { method: "PUT", body: b }),
+  deleteRule: (id) => _req(`/alerts/rules/${id}`, { method: "DELETE" }),
+  listChannels: () => _req("/alerts/channels"),
+  addChannel: (b) => _req("/alerts/channels", { method: "POST", body: b }),
+  updateChannel: (id, b) => _req(`/alerts/channels/${id}`, { method: "PUT", body: b }),
+  deleteChannel: (id) => _req(`/alerts/channels/${id}`, { method: "DELETE" }),
+  testChannel: (b) => _req("/alerts/channels/test", { method: "POST", body: b }),
+  listRules: () => _req("/alerts/rules"),
   createRule: (r) => _req("/alerts/rules", { method: "POST", body: r }),
   updateRule: (id, r) => _req(`/alerts/rules/${id}`, { method: "PUT", body: r }),
   deleteRule: (id) => _req(`/alerts/rules/${id}`, { method: "DELETE" }),
@@ -92,6 +101,7 @@ const api = {
   metric: (id, metric, range="24h", label="") => _req(`/metrics/devices/${id}?metric=${metric}&range=${range}${label?`&label=${encodeURIComponent(label)}`:""}`),
   metricInterfaces: (id, range="24h") => _req(`/metrics/devices/${id}/interfaces?range=${range}`),
   metricSummary: (id) => _req(`/metrics/devices/${id}/summary`),
+  fleetSummary: () => _req("/metrics/fleet-summary"),
   connectSSH: (id) => {
     const tok = _loadTok();
     const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -1703,6 +1713,15 @@ function AppInner({auth, onLogout}) {
   }, [refreshTick]);
   function doRefresh() { if (refreshing) return; refreshStart.current = Date.now(); setRefreshing(true); setRefreshTick(t => t + 1); }
 
+  // Fleet-wide latest cpu/mem/uptime, keyed by device id — powers the inventory table.
+  const [fleetMetrics, setFleetMetrics] = useState({});
+  useEffect(() => {
+    if (MOCK_MODE) return;
+    let alive = true;
+    api.fleetSummary().then(m => { if (alive) setFleetMetrics(m || {}); }).catch(() => {});
+    return () => { alive = false; };
+  }, [refreshTick]);
+
   const sel = devices.find(d=>d.id===selId);
 
   // Live device-level metrics (latest sampled CPU/mem/uptime) for the detail panel.
@@ -1855,15 +1874,15 @@ function AppInner({auth, onLogout}) {
                 <table>
                   <thead><tr><th>Device</th><th>IP address</th><th>Vendor / Model</th><th>Protocol</th><th>Status</th><th>CPU</th><th>Uptime</th><th></th></tr></thead>
                   <tbody>
-                    {filtered.map(d=>{ const col=devColor(d.type); return (
+                    {filtered.map(d=>{ const col=devColor(d.type); const fm=fleetMetrics[d.id]||{}; const rowCpu=fm.cpu!=null?Math.round(fm.cpu):(d.cpu||0); const rowUptime=fm.uptime||((d.uptime&&d.uptime!=="—")?d.uptime:"—"); return (
                       <tr key={d.id} className={selId===d.id?"sel":""} onClick={()=>pickDevice(d.id)}>
                         <td><div className="dc"><div className="di" style={{background:col.bg,color:col.color}}>{IC[d.type]||IC.switch}</div><div><div style={{fontWeight:500,color:"#e6edf3"}}>{d.name}</div><div style={{fontSize:11,color:"#8b949e"}}>{d.location}</div></div></div></td>
                         <td><span className="mono">{d.ip}</span></td>
                         <td><div style={{fontWeight:500,fontSize:13,color:"#e6edf3"}}>{d.vendor}</div><div style={{fontSize:11,color:"#8b949e"}}>{d.model}</div></td>
                         <td><span className={`ptag ${d.protocol.toLowerCase().replace(/[^a-z0-9]/g,"")}`}>{d.protocol}</span>{d.capability==="readonly" && <span className="ro-badge" style={{marginLeft:5}} title="Read-only (controller-managed)">{IC.eye} RO</span>}</td>
                         <td><span className={`sbadge ${d.status}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>{d.status}</span></td>
-                        <td>{d.status!=="down"?(<div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:44,height:4,background:"#21262d",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${d.cpu}%`,background:d.cpu>80?"#f85149":d.cpu>60?"#e3b341":"#3fb950",borderRadius:2}}/></div><span className="mono" style={{fontSize:11}}>{d.cpu}%</span></div>):<span className="mono">—</span>}</td>
-                        <td><span className="mono" style={{fontSize:11}}>{d.uptime}</span></td>
+                        <td>{d.status!=="down"?(<div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:44,height:4,background:"#21262d",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${rowCpu}%`,background:rowCpu>80?"#f85149":rowCpu>60?"#e3b341":"#3fb950",borderRadius:2}}/></div><span className="mono" style={{fontSize:11}}>{rowCpu}%</span></div>):<span className="mono">—</span>}</td>
+                        <td><span className="mono" style={{fontSize:11}}>{rowUptime}</span></td>
                         <td><div className="row-acts"><div className="act" title="Open full page" onClick={e=>{e.stopPropagation();setSelId(d.id);setFullId(d.id);setTab("detail");setSelIface(null);}}>{IC.info}</div><div className="act term" title="SSH Terminal" onClick={e=>{e.stopPropagation();setSelId(d.id);setTab("ssh");setSelIface(null);}}>{IC.terminal}</div><div className="act" title="Edit device" onClick={e=>{e.stopPropagation();setEditId(d.id);}}>{IC.edit}</div><div className="act" title="Remove device" onClick={e=>{e.stopPropagation();removeDevice(d.id);}} style={{color:"#f85149"}}>{IC.x}</div></div></td>
                       </tr>
                     ); })}
