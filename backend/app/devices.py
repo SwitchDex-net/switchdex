@@ -49,6 +49,28 @@ async def _ssh_pull_config(ip, port, user, pw, platform="ios") -> str:
     LEGACY_HKEY = ["ssh-rsa", "rsa-sha2-256", "rsa-sha2-512", "ssh-ed25519",
                    "ecdsa-sha2-nistp256"]
     style = _PLATFORM_GEN.get((platform or "ios").lower(), (_cmds_ios, "ios"))[1]
+    plat = (platform or "").lower()
+
+    # pfSense / OPNsense (FreeBSD): config is an XML file, not a CLI "show run".
+    # Pull it directly. These often present a console menu on interactive login,
+    # so use a one-shot exec of `cat` which bypasses the menu.
+    if plat in ("pfsense", "opnsense", "freebsd", "bsd"):
+        async def _go_bsd():
+            async with asyncssh.connect(ip, port=port, username=user, password=pw,
+                                        known_hosts=None, kex_algs=LEGACY_KEX,
+                                        server_host_key_algs=LEGACY_HKEY,
+                                        connect_timeout=10) as conn:
+                r = await conn.run("cat /conf/config.xml", check=False, timeout=30)
+                return (r.stdout or "")
+        try:
+            text = await asyncio.wait_for(_go_bsd(), timeout=40)
+        except Exception:  # noqa: BLE001
+            text = ""
+        if text.strip().startswith("<?xml") or "<opnsense>" in text or "<pfsense>" in text:
+            return text.strip() + "\n"
+        # if the menu intercepted the exec, fall through to interactive attempt below
+        # (some installs allow it); otherwise the caller gets a clear empty result
+
     pager_off = {"ios": "terminal length 0", "junos": "set cli screen-length 0",
                  "sonic": ""}.get(style, "terminal length 0")
     show_cmd = {"ios": "show running-config", "junos": "show configuration | display set",

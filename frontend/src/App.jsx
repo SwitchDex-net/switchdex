@@ -302,6 +302,15 @@ tbody tr:hover .row-acts{opacity:1;}
 
 /* ── Add device modal ── */
 .overlay{position:absolute;inset:0;background:rgba(1,4,9,.88);display:flex;align-items:center;justify-content:center;z-index:200;}
+.qv-scrim{position:absolute;inset:0;background:rgba(1,4,9,.35);z-index:210;}
+.qv-drawer{position:absolute;top:0;right:0;bottom:0;width:340px;background:#0d1117;border-left:1px solid #30363d;box-shadow:-8px 0 24px rgba(0,0,0,.4);z-index:211;display:flex;flex-direction:column;animation:qv-in .18s ease-out;}
+@keyframes qv-in{from{transform:translateX(20px);opacity:.4;}to{transform:translateX(0);opacity:1;}}
+.qv-hdr{display:flex;align-items:center;gap:10px;padding:14px 14px 12px;border-bottom:1px solid #21262d;}
+.qv-name{font-weight:600;color:#e6edf3;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.qv-x{cursor:pointer;color:#8b949e;display:flex;align-items:center;flex-shrink:0;}
+.qv-x:hover{color:#e6edf3;}
+.qv-body{flex:1;overflow-y:auto;padding:14px;}
+.qv-footer{padding:12px 14px;border-top:1px solid #21262d;}
 .modal{background:#161b22;border:1px solid #30363d;border-radius:12px;width:460px;overflow:hidden;}
 .modal-hdr{padding:18px 20px 0;display:flex;align-items:flex-start;justify-content:space-between;}
 .modal-title{font-size:15px;font-weight:600;color:#e6edf3;}
@@ -959,34 +968,37 @@ function QuickView({device:d, metrics, onClose, onOpenFull}) {
   const uptime = m.uptime || (d.uptime && d.uptime !== "—" ? d.uptime : "—");
   const ro = d.capability === "readonly";
   return (
-    <div className="overlay" onMouseDown={e=>{ if(e.target===e.currentTarget) onClose(); }}>
-      <div className="modal" style={{width:380}}>
-        <div className="modal-hdr" style={{display:"flex",alignItems:"center",gap:10}}>
+    <>
+      {/* click-away scrim — transparent so the page stays visible behind it */}
+      <div className="qv-scrim" onMouseDown={onClose}/>
+      <div className="qv-drawer">
+        <div className="qv-hdr">
           <div className="di" style={{background:col.bg,color:col.color,width:34,height:34,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center"}}>{IC[d.type]||IC.switch}</div>
-          <div style={{flex:1}}>
-            <div className="modal-title" style={{marginBottom:0}}>{d.name}</div>
+          <div style={{flex:1,minWidth:0}}>
+            <div className="qv-name">{d.name}</div>
             <div style={{fontSize:12,color:"#8b949e"}}>{d.ip} · {d.vendor} {d.model}</div>
           </div>
-          <span className={`sbadge ${d.status}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>{d.status}</span>
+          <span className="qv-x" onClick={onClose} title="Close">{IC.x}</span>
         </div>
-        <div className="modal-body">
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+        <div className="qv-body">
+          <div style={{marginBottom:12}}><span className={`sbadge ${d.status}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>{d.status}</span></div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
             <div className="metric-card"><div className="metric-label">CPU</div><div className="metric-val">{cpu!=null?cpu+"%":"—"}</div></div>
             <div className="metric-card"><div className="metric-label">Memory</div><div className="metric-val">{mem!=null?mem+"%":"—"}</div></div>
             <div className="metric-card"><div className="metric-label">Uptime</div><div className="metric-val" style={{fontSize:14}}>{uptime}</div></div>
           </div>
-          <div style={{fontSize:12,color:"#8b949e",lineHeight:1.7}}>
+          <div style={{fontSize:12,color:"#8b949e",lineHeight:1.9}}>
             <div><span style={{color:"#6e7681"}}>Type:</span> {d.type}{d.role?` · ${d.role}`:""}</div>
             <div><span style={{color:"#6e7681"}}>Protocol:</span> {d.protocol}{ro?" · read-only (controller-managed)":""}</div>
             {d.location && <div><span style={{color:"#6e7681"}}>Location:</span> {d.location}</div>}
+            {d.os && <div><span style={{color:"#6e7681"}}>OS:</span> {d.os}</div>}
           </div>
         </div>
-        <div className="modal-footer">
-          <button className="mbtn cancel" onClick={onClose}>Close</button>
-          <button className="mbtn add" onClick={onOpenFull}>Open full details ›</button>
+        <div className="qv-footer">
+          <button className="mbtn add" style={{width:"100%"}} onClick={onOpenFull}>Open full details ›</button>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
