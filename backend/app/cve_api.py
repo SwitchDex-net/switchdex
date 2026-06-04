@@ -3,11 +3,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from . import cve as scanner
-from .auth_api import get_current_user, require_admin
+from .auth import get_current_user, require_admin
 from .db import SessionLocal, Device, Cve
 from sqlalchemy import select, func
 
-router = APIRouter(prefix="/security", tags=["security"])
+router = APIRouter(prefix="/api/security", tags=["security"])
 
 
 @router.get("/summary")
