@@ -1907,11 +1907,14 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
   const failedCount = rows.filter(r=>r.status==="failed").length;
   const totalVersions = rows.reduce((a,r)=>a+r.count,0);
 
-  function backupAll(){
-    setRunning(true);
-    Promise.resolve(onBackupAll())
-      .catch(()=>{})
-      .finally(()=>{ setRunning(false); setTick(t=>t+1); });
+  const [busyId, setBusyId] = useState(null);   // device id currently backing up
+  function backupOne(id){
+    if (busyId) return;
+    setBusyId(id);
+    const p = MOCK_MODE ? Promise.resolve() : api.backupDevice(id);
+    Promise.resolve(p)
+      .catch(e=>console.error("backup failed", e))
+      .finally(()=>{ setBusyId(null); setTick(t=>t+1); });
   }
 
   return (
@@ -1926,10 +1929,9 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
       <div className="sched-bar">
         <div style={{width:34,height:34,borderRadius:8,background:"#1a2e3e",color:"#58a6ff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{IC.clock}</div>
         <div className="sched-info">
-          <div className="sched-title">Scheduled backup — daily</div>
-          <div className="sched-sub">SSH pull · running-config hashed for change detection · only changed configs create a new version</div>
+          <div className="sched-title">Automatic backups run on each device's schedule</div>
+          <div className="sched-sub">SSH pull · running-config hashed for change detection · only changed configs create a new version. Use a device's “Back up now” to pull on demand.</div>
         </div>
-        <button className="cfg-btn primary" onClick={backupAll} disabled={running}>{running?IC.clock:IC.download} {running?"Backing up fleet…":"Run backup now"}</button>
       </div>
 
       <div className="fleet-tbl-card">
@@ -1953,6 +1955,11 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
               <span style={{width:6,height:6,borderRadius:"50%",background:"currentColor"}}/>
               {status==="ok"?(last?"up to date":"no backups"):status==="changed"?"changed":"error"}
             </span>
+            <button className="cfg-btn" style={{flexShrink:0}} disabled={busyId===d.id}
+              onClick={(e)=>{ e.stopPropagation(); backupOne(d.id); }}
+              title="Pull running-config now">
+              {busyId===d.id ? <><span style={{display:"inline-flex",animation:"sdx-spin 0.7s linear infinite"}}>{IC.clock}</span> Backing up…</> : <>{IC.download} Back up now</>}
+            </button>
           </div>
         ))}
       </div>
