@@ -39,8 +39,9 @@ async def pull_running_config(dev) -> str:
 
 async def _ssh_pull_config(ip, port, user, pw, platform="ios") -> str:
     """Pull running-config over asyncssh using the legacy algorithm set that
-    older switches (e.g. Catalyst 3850) require. Mirrors the working SSH path
-    used elsewhere so we don't fight Paramiko's stricter negotiation."""
+    older switches (e.g. Catalyst 3850) require. Uses an interactive shell (not
+    one-shot exec) so it gets past the login banner and runs in the proper EXEC
+    context with paging disabled — the same approach as the working push path."""
     import asyncssh
     LEGACY_KEX = ["diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1",
                   "diffie-hellman-group14-sha256", "curve25519-sha256",
@@ -53,19 +54,50 @@ async def _ssh_pull_config(ip, port, user, pw, platform="ios") -> str:
     show_cmd = {"ios": "show running-config", "junos": "show configuration | display set",
                 "sonic": "show runningconfiguration all"}.get(style, "show running-config")
 
+    async def _drain(proc, timeout=1.0):
+        buf = ""
+        try:
+            while True:
+                chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=timeout)
+                if not chunk:
+                    break
+                buf += chunk
+        except asyncio.TimeoutError:
+            pass
+        return buf
+
     async def _go():
         async with asyncssh.connect(ip, port=port, username=user, password=pw,
                                     known_hosts=None, kex_algs=LEGACY_KEX,
                                     server_host_key_algs=LEGACY_HKEY,
                                     connect_timeout=10) as conn:
-            cmd = (f"{pager_off}\n{show_cmd}" if pager_off else show_cmd)
-            r = await conn.run(cmd, check=False, timeout=30)
-            return (r.stdout or "")
+            proc = await conn.create_process(term_type="vt100", encoding="utf-8")
+            await asyncio.sleep(0.4)
+            await _drain(proc, 0.8)            # swallow login banner / first prompt
+            if pager_off:
+                proc.stdin.write(pager_off + "\n")
+                await asyncio.sleep(0.3)
+                await _drain(proc, 0.5)
+            proc.stdin.write(show_cmd + "\n")
+            await asyncio.sleep(0.6)
+            # large configs stream in chunks; keep draining until output stops
+            out = await _drain(proc, 2.0)
+            proc.stdin.write("exit\n")
+            return out
 
-    out = await asyncio.wait_for(_go(), timeout=40)
-    # strip the echoed pager command / prompt noise from the top if present
+    out = await asyncio.wait_for(_go(), timeout=60)
+    # clean: drop echoed commands, the trailing prompt line, and blank noise
     lines = out.splitlines()
-    cleaned = [ln for ln in lines if ln.strip() not in (pager_off, show_cmd)]
+    cleaned = []
+    for ln in lines:
+        st = ln.strip()
+        if st in (pager_off, show_cmd):
+            continue
+        # drop a trailing device prompt like "hostname#" or "hostname>"
+        if st.endswith("#") or st.endswith(">"):
+            if len(st.split()) == 1:
+                continue
+        cleaned.append(ln)
     return "\n".join(cleaned).strip() + "\n"
 
 
