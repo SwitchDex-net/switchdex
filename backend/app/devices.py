@@ -285,22 +285,23 @@ def lldp_neighbors(ip, community, version="2c"):
     portdscs = _snmp_walk_full(ip, community, REM_PORTDSC, version)
     locports = _snmp_walk_full(ip, community, LLDP_LOC_PORT, version)
 
-    # management-address table: index suffix encodes localPort.remIndex + addr
-    # subtype/len/octets. The trailing dotted octets ARE the peer IP for IPv4.
-    manaddrs = _snmp_walk_full(ip, community, REM_MANADDR + ".1", version)  # lldpRemManAddrIfSubtype keyed by full idx
-    # derive peer IP per localPort.remIndex from the man-addr index itself
+    # management-address table (lldpRemManAddrTable). Walk the whole subtree;
+    # each row's index is: timeMark.localPort.remIndex.addrSubtype.addrLen.<octets>
+    # We only need IPv4 (subtype 1, len 4) and we key the result by the same
+    # localPort.remIndex used for the rest of the remote table, so it aligns.
+    manaddrs = _snmp_walk_full(ip, community, REM_MANADDR, version)
     peer_ip_by_pp = {}
-    for suffix in list(sysnames.keys()):
-        peer_ip_by_pp.setdefault(_pp_key(suffix), "")
     for full_idx in manaddrs.keys():
-        # full_idx = localPort.remIndex.addrSubtype.addrLen.o1.o2.o3.o4
         parts = full_idx.split(".")
-        if len(parts) >= 7:
-            pp = ".".join(parts[0:2])             # localPort.remIndex
-            subtype = parts[2]
-            if subtype == "1":                    # IPv4
-                octets = parts[-4:]
-                peer_ip_by_pp[pp] = ".".join(octets)
+        # locate the IPv4 marker: subtype=1, len=4, then 4 octets at the tail
+        # robust approach: if the last 6 tokens are [1, 4, o1, o2, o3, o4]
+        if len(parts) >= 6 and parts[-6] == "1" and parts[-5] == "4":
+            o = parts[-4:]
+            if all(t.isdigit() and 0 <= int(t) <= 255 for t in o):
+                # tokens before [subtype,len,octets...] end with localPort.remIndex
+                head = parts[:-6]
+                pp = ".".join(head[-2:]) if len(head) >= 2 else ".".join(head)
+                peer_ip_by_pp[pp] = ".".join(o)
 
     neighbors = []
     for suffix, sysname in sysnames.items():
