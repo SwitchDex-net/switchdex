@@ -327,6 +327,75 @@ def snmp_interfaces(ip, community, version="2c"):
     return out
 
 
+# module-level cache of last counter readings for rate computation:
+# {(ip, ifname): {"in": int, "out": int, "inerr": int, "outerr": int, "ts": float}}
+_IF_COUNTER_CACHE = {}
+
+
+def snmp_interface_rates(ip, community, version="2c"):
+    """Walk IF-MIB high-capacity octet + error counters and compute per-interface
+    rates by diffing against the previous reading. Returns
+    {ifname: {rx_bps, tx_bps, in_err_ps, out_err_ps, status, speed_bps}}.
+    The first call for a device returns zero rates (no prior sample to diff)."""
+    import time as _time
+    IF_NAME   = "1.3.6.1.2.1.31.1.1.1.1"     # ifName (cleaner key than ifDescr)
+    IF_HCIN   = "1.3.6.1.2.1.31.1.1.1.6"     # ifHCInOctets (64-bit)
+    IF_HCOUT  = "1.3.6.1.2.1.31.1.1.1.10"    # ifHCOutOctets (64-bit)
+    IF_INERR  = "1.3.6.1.2.1.2.2.1.14"       # ifInErrors
+    IF_OUTERR = "1.3.6.1.2.1.2.2.1.20"       # ifOutErrors
+    IF_OPER   = "1.3.6.1.2.1.2.2.1.8"        # ifOperStatus
+    IF_HSPEED = "1.3.6.1.2.1.31.1.1.1.15"    # ifHighSpeed (Mbps)
+
+    names = _snmp_walk(ip, community, IF_NAME, version)
+    if not names:
+        return {}
+    hcin   = _snmp_walk(ip, community, IF_HCIN, version)
+    hcout  = _snmp_walk(ip, community, IF_HCOUT, version)
+    inerr  = _snmp_walk(ip, community, IF_INERR, version)
+    outerr = _snmp_walk(ip, community, IF_OUTERR, version)
+    oper   = _snmp_walk(ip, community, IF_OPER, version)
+    hspeed = _snmp_walk(ip, community, IF_HSPEED, version)
+    now = _time.time()
+
+    def _int(d, idx):
+        try:
+            return int(d.get(idx, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    out = {}
+    for idx, name in names.items():
+        cin, cout = _int(hcin, idx), _int(hcout, idx)
+        cie, coe = _int(inerr, idx), _int(outerr, idx)
+        key = (ip, name)
+        prev = _IF_COUNTER_CACHE.get(key)
+        rx_bps = tx_bps = in_err_ps = out_err_ps = 0.0
+        if prev:
+            dt_s = now - prev["ts"]
+            if dt_s > 0:
+                # counters are monotonic; a negative delta means a wrap/reset → skip
+                d_in, d_out = cin - prev["in"], cout - prev["out"]
+                d_ie, d_oe = cie - prev["inerr"], coe - prev["outerr"]
+                if d_in >= 0:
+                    rx_bps = d_in * 8 / dt_s          # octets→bits
+                if d_out >= 0:
+                    tx_bps = d_out * 8 / dt_s
+                if d_ie >= 0:
+                    in_err_ps = d_ie / dt_s
+                if d_oe >= 0:
+                    out_err_ps = d_oe / dt_s
+        _IF_COUNTER_CACHE[key] = {"in": cin, "out": cout, "inerr": cie,
+                                  "outerr": coe, "ts": now}
+        spd_mbps = _int(hspeed, idx)
+        out[name] = {
+            "rx_bps": round(rx_bps, 1), "tx_bps": round(tx_bps, 1),
+            "in_err_ps": round(in_err_ps, 3), "out_err_ps": round(out_err_ps, 3),
+            "status": "up" if oper.get(idx) == "1" else "down",
+            "speed_bps": spd_mbps * 1_000_000,
+        }
+    return out
+
+
 def snmp_metrics(ip, community, version="2c"):
     """Poll device-level health metrics over SNMP. Returns
     {cpu: %, mem: %, uptime: "Nd Nh", uptime_secs: int, reachable: bool}.
