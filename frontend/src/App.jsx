@@ -97,7 +97,8 @@ const api = {
   securityScanController: (id) => _req(`/security/controllers/${id}/scan`, { method: "POST", timeoutMs: 120000 }),
   securityScan: () => _req("/security/scan", { method: "POST" }),
   securityScanDevice: (id) => _req(`/security/devices/${id}/scan`, { method: "POST" }),
-  securitySync: (full=false) => _req(`/security/sync?full=${full}`, { method: "POST", timeoutMs: 600000 }),
+  securitySync: (full=false) => _req(`/security/sync?full=${full}`, { method: "POST", timeoutMs: 30000 }),
+  securityScanStatus: () => _req("/security/scan-status"),
   setDeviceCpe: (id, cpe) => _req(`/security/devices/${id}/cpe`, { method: "PUT", body: {cpe} }),
   metric: (id, metric, range="24h", label="") => _req(`/metrics/devices/${id}?metric=${metric}&range=${range}${label?`&label=${encodeURIComponent(label)}`:""}`),
   metricInterfaces: (id, range="24h") => _req(`/metrics/devices/${id}/interfaces?range=${range}`),
@@ -2622,7 +2623,7 @@ function SecurityView({auth, devices, onOpenDevice}) {
   const [msg, setMsg] = useState(null);
 
   function load(){ api.securitySummary().then(setData).catch(()=>setData({devices:[],controllers:[],cve_db:{},totals:{}})); }
-  useEffect(()=>{ if(!MOCK_MODE) load(); }, []);
+  useEffect(()=>{ if(!MOCK_MODE){ load(); api.securityScanStatus().then(st=>{ if(st.running){ setBusy("scan"); setMsg(`Scanning… ${st.progress||""}`); setTimeout(pollScan,2000); } }).catch(()=>{}); } }, []);
 
   function openDevice(id){
     setSel(id); setSelCtrl(null); setFindings(null);
@@ -2632,15 +2633,27 @@ function SecurityView({auth, devices, onOpenDevice}) {
     setSelCtrl(id); setSel(null); setFindings(null);
     api.securityController(id).then(r=>setFindings(r.findings||[])).catch(()=>setFindings([]));
   }
+  function pollScan(){
+    api.securityScanStatus().then(st=>{
+      if (st.running){
+        setMsg(`Scanning… ${st.progress||""}`);
+        setTimeout(pollScan, 2000);
+      } else {
+        const r = st.result || {};
+        setMsg(`Scan complete — ${r.total_findings||0} findings across ${r.devices||0} devices, ${r.controllers||0} controllers`);
+        setBusy(""); load();
+      }
+    }).catch(()=>{ setBusy(""); setMsg("Lost track of scan status — refresh to see results."); });
+  }
   function rescan(){
-    setBusy("scan"); setMsg(null);
-    api.securityScan().then(r=>{ setMsg(`Scan complete — ${r.total_findings} findings across ${r.devices} devices`); load(); if(sel) openDevice(sel); })
-      .catch(e=>setMsg("Scan failed: "+e.message)).finally(()=>setBusy(""));
+    setBusy("scan"); setMsg("Starting scan…");
+    api.securityScan().then(()=>{ setTimeout(pollScan, 1500); })
+      .catch(e=>{ setMsg("Scan failed: "+e.message); setBusy(""); });
   }
   function syncNvd(){
-    setBusy("sync"); setMsg("Pulling latest CVEs from NVD — this can take a few minutes…");
-    api.securitySync(false).then(r=>{ setMsg(`Scan complete — ${r.scan?.total_findings||0} findings across ${r.scan?.devices||0} devices`); load(); })
-      .catch(e=>setMsg("Sync failed: "+e.message)).finally(()=>setBusy(""));
+    setBusy("sync"); setMsg("Starting NVD query…");
+    api.securitySync(false).then(()=>{ setTimeout(pollScan, 1500); })
+      .catch(e=>{ setMsg("Sync failed: "+e.message); setBusy(""); });
   }
 
   if (!data) return <div className="cfg-loading"><span className="cfg-spin"/> Loading security overview…</div>;

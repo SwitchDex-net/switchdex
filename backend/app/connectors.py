@@ -173,15 +173,20 @@ class OmadaConnector:
         return {"Authorization": f"AccessToken={self._token}"}
 
     def get_controller_version(self):
-        """Omada controller software version via the Open API info endpoint."""
-        try:
-            r = self._http.get(f"{self.ctrl.base_url}/openapi/v1/{self._cid}/info",
-                               headers=self._hdr(), timeout=10)
-            if r.status_code == 200:
-                res = r.json().get("result", {})
-                return res.get("controllerVer") or res.get("version") or ""
-        except Exception:  # noqa: BLE001
-            pass
+        """Omada controller software version. The plain /api/info endpoint
+        (not under /openapi) returns controllerVer without needing the omadacId
+        in the path."""
+        for path in ("/api/info", f"/openapi/v1/{self._cid}/info"):
+            try:
+                r = self._http.get(f"{self.ctrl.base_url}{path}",
+                                   headers=self._hdr(), timeout=10)
+                if r.status_code == 200:
+                    res = r.json().get("result", {})
+                    ver = res.get("controllerVer") or res.get("version")
+                    if ver:
+                        return ver
+            except Exception:  # noqa: BLE001
+                continue
         return ""
 
     def _resolve_site_id(self):

@@ -72,10 +72,22 @@ async def scan_controller_ep(controller_id: int):
     return await scanner.scan_controller(controller_id)
 
 
+import asyncio
+
+
 @router.post("/scan", dependencies=[Depends(require_admin)])
 async def scan_all():
-    """Re-run matching for the whole fleet against the local CVE DB (fast)."""
-    return await scanner.scan_fleet()
+    """Kick off a fleet re-scan in the background; returns immediately.
+    Poll /security/scan-status for progress/completion."""
+    if scanner.scan_status()["running"]:
+        return {"started": False, "already_running": True}
+    asyncio.create_task(scanner.scan_fleet(background=True))
+    return {"started": True}
+
+
+@router.get("/scan-status")
+async def scan_status_ep(_: dict = Depends(get_current_user)):
+    return scanner.scan_status()
 
 
 @router.post("/devices/{device_id}/scan", dependencies=[Depends(require_admin)])
@@ -85,9 +97,11 @@ async def scan_one(device_id: int):
 
 @router.post("/sync", dependencies=[Depends(require_admin)])
 async def sync_now(full: bool = False):
-    """Re-query NVD for every device's CPE and refresh cached findings.
-    (Per-CPE live query — finds CVEs of any age for the device's exact version.)"""
-    return {"scan": await scanner.scan_fleet()}
+    """Alias for /scan — kicks off a background fleet re-query of NVD."""
+    if scanner.scan_status()["running"]:
+        return {"started": False, "already_running": True}
+    asyncio.create_task(scanner.scan_fleet(background=True))
+    return {"started": True}
 
 
 class CpeIn(BaseModel):

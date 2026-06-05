@@ -403,18 +403,38 @@ async def scan_device(device_id: int) -> dict:
             "by_severity": by_sev, "covered": covered}
 
 
-async def scan_fleet() -> dict:
-    async with SessionLocal() as s:
-        ids = (await s.execute(select(Device.id))).scalars().all()
-        ctrl_ids = (await s.execute(select(Controller.id))).scalars().all()
-    total = 0
-    for i in ids:
-        r = await scan_device(i)
-        total += r.get("matched", 0)
-    for c in ctrl_ids:
-        r = await scan_controller(c)
-        total += r.get("matched", 0)
-    return {"devices": len(ids), "controllers": len(ctrl_ids), "total_findings": total}
+_SCAN_STATE = {"running": False, "started": None, "finished": None,
+               "result": None, "progress": ""}
+
+
+def scan_status() -> dict:
+    return dict(_SCAN_STATE)
+
+
+async def scan_fleet(background: bool = False) -> dict:
+    if _SCAN_STATE["running"]:
+        return {"already_running": True, **scan_status()}
+    _SCAN_STATE.update(running=True, started=dt.datetime.utcnow().isoformat() + "Z",
+                       finished=None, result=None, progress="starting")
+    try:
+        async with SessionLocal() as s:
+            ids = (await s.execute(select(Device.id))).scalars().all()
+            ctrl_ids = (await s.execute(select(Controller.id))).scalars().all()
+        total = 0
+        for n, i in enumerate(ids, 1):
+            _SCAN_STATE["progress"] = f"device {n}/{len(ids)}"
+            r = await scan_device(i)
+            total += r.get("matched", 0)
+        for n, c in enumerate(ctrl_ids, 1):
+            _SCAN_STATE["progress"] = f"controller {n}/{len(ctrl_ids)}"
+            r = await scan_controller(c)
+            total += r.get("matched", 0)
+        result = {"devices": len(ids), "controllers": len(ctrl_ids), "total_findings": total}
+        _SCAN_STATE["result"] = result
+        return result
+    finally:
+        _SCAN_STATE.update(running=False, finished=dt.datetime.utcnow().isoformat() + "Z",
+                           progress="done")
 
 
 def _controller_cpes(kind: str, version: str):
