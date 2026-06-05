@@ -415,10 +415,12 @@ async def scan_device(device_id: int) -> dict:
             dev_name = f"device {device_id}"
         await s.commit()
 
-    # feed the automation engine when notable CVEs are found
+    # feed the automation engine when notable CVEs are found.
+    # NOTE: by_sev keys are uppercase ("CRITICAL"/"HIGH"/...) — normalize case.
     if findings:
+        by_sev_lc = {(k or "").lower(): v for k, v in by_sev.items()}
         order = ["critical", "high", "medium", "low"]
-        top = next((sv for sv in order if by_sev.get(sv)), "")
+        top = next((sv for sv in order if by_sev_lc.get(sv)), "")
         if top in ("critical", "high"):
             try:
                 from . import automations as autoeng

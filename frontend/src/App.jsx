@@ -3168,13 +3168,22 @@ function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
       <div className="set-section">
         <div className="set-h">Trigger</div>
         <label className="auto-lbl">Type</label>
-        <select className="set-input" value={a.trigger_type} onChange={e=>set("trigger_type",e.target.value)}>
+        <select className="set-input" value={a.trigger_type} onChange={e=>{
+          const tt=e.target.value;
+          setA(p=>({...p,trigger_type:tt,trigger: tt==="schedule"?{cron:""}:{event:"metric_threshold",metric:"cpu",op:">",value:90}}));
+        }}>
           <option value="event">Event-driven</option>
           <option value="schedule">Scheduled (cron)</option>
         </select>
         {a.trigger_type==="event" ? (<>
           <label className="auto-lbl">When</label>
-          <select className="set-input" value={a.trigger.event||"metric_threshold"} onChange={e=>setT("event",e.target.value)}>
+          <select className="set-input" value={a.trigger.event||"metric_threshold"} onChange={e=>{
+            const ev=e.target.value;
+            const defaults = ev==="metric_threshold" ? {event:ev,metric:"cpu",op:">",value:90}
+              : ev==="cve_found" ? {event:ev,min_severity:"high"}
+              : {event:ev};
+            setA(p=>({...p,trigger:defaults}));
+          }}>
             {AUTO_TRIGGERS.map(t=><option key={t.v} value={t.v}>{t.label}</option>)}
           </select>
           {a.trigger.event==="metric_threshold" && (
