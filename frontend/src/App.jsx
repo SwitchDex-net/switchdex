@@ -2324,6 +2324,19 @@ function AppInner({auth, onLogout}) {
   const liveMem = liveSummary && liveSummary.mem != null ? Math.round(liveSummary.mem) : (sel?.mem ?? 0);
   const liveUptime = (liveSummary?.uptime) || ((sel?.uptime && sel.uptime !== "—") ? sel.uptime : "—");
 
+  // real connected-client count for the selected AP (device_metrics is unreliable;
+  // count the live wireless-client list matched to this AP)
+  const [apClientCount, setApClientCount] = useState(null);
+  useEffect(() => {
+    setApClientCount(null);
+    if (MOCK_MODE || !sel || sel.type !== "ap") return;
+    let alive = true;
+    api.fleetClients()
+      .then(r => { if (alive) setApClientCount((r.clients||[]).filter(c => c.ap_name === sel.name || c.ap_mac === sel.external_id).length); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [selId, refreshTick]);
+
   // Real mode: pull live interfaces from the device when its detail opens.
   useEffect(() => {
     if (MOCK_MODE || !sel) return;
@@ -2531,9 +2544,16 @@ function AppInner({auth, onLogout}) {
                     {ro && (
                       <div><div className="sec-title">Live metrics</div>
                         <div className="metric-grid">
-                          {[["CPU",liveCpu+"%"],["Memory",liveMem+"%"],["Uptime",liveUptime],["Clients",(sel.interfaces?Object.values(sel.interfaces).filter(i=>i.status==="up").length*4:0)+""]].map(([k,v])=>(
+                          {[["CPU",liveCpu+"%"],["Memory",liveMem+"%"],["Uptime",liveUptime]].map(([k,v])=>(
                             <div className="metric-card" key={k}><div className="metric-label">{k}</div><div className="metric-val">{v}</div></div>
                           ))}
+                          {sel.type==="ap" && (
+                            <div className="metric-card" style={{cursor:"pointer"}} title="View connected clients"
+                              onClick={()=>{ setClientsFilterAp(sel.name); setView("clients"); }}>
+                              <div className="metric-label">Clients ›</div>
+                              <div className="metric-val" style={{color:"#58a6ff"}}>{apClientCount!=null?apClientCount:"…"}</div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
