@@ -2379,6 +2379,28 @@ function AppInner({auth, onLogout}) {
     return () => { alive = false; };
   }, [selId, refreshTick]);
 
+  // total device throughput (sum of latest rx/tx across all interfaces) — for
+  // the System panel; works for SNMP switches/firewalls and APs alike
+  const [devThroughput, setDevThroughput] = useState(null);
+  useEffect(() => {
+    setDevThroughput(null);
+    if (MOCK_MODE || !sel) return;
+    let alive = true;
+    api.metricInterfaces(sel.id, "1h")
+      .then(r => { if (alive) {
+        const ifs = r.interfaces || {};
+        let rx = 0, tx = 0;
+        for (const nm of Object.keys(ifs)) {
+          const rxs = ifs[nm].rx||[], txs = ifs[nm].tx||[];
+          if (rxs.length) rx += rxs[rxs.length-1].v;
+          if (txs.length) tx += txs[txs.length-1].v;
+        }
+        setDevThroughput({rx, tx});
+      }})
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [selId, refreshTick]);
+
   // Real mode: pull live interfaces from the device when its detail opens.
   useEffect(() => {
     if (MOCK_MODE || !sel) return;
@@ -2605,7 +2627,7 @@ function AppInner({auth, onLogout}) {
                     )}
 
                     <div><div className="sec-title">System</div>
-                      <div className="dgrid">{[["OS",sel.os],["Protocol",sel.protocol],["Location",sel.location],["Uptime",liveUptime],["CPU",sel.status!=="down"?liveCpu+"%":"—"],["Memory",sel.status!=="down"?liveMem+"%":"—"]].map(([k,v])=>(<div className="dkv" key={k}><div className="dkv-k">{k}</div><div className="dkv-v">{String(v)}</div></div>))}</div>
+                      <div className="dgrid">{[["OS",sel.os],["Protocol",sel.protocol],["Location",sel.location],["Uptime",liveUptime],["CPU",sel.status!=="down"?liveCpu+"%":"—"],["Memory",sel.status!=="down"?liveMem+"%":"—"],["Rx",devThroughput!=null?fmtBps(devThroughput.rx):"—"],["Tx",devThroughput!=null?fmtBps(devThroughput.tx):"—"],["Total",devThroughput!=null?fmtBps(devThroughput.rx+devThroughput.tx):"—"]].map(([k,v])=>(<div className="dkv" key={k}><div className="dkv-k">{k}</div><div className="dkv-v">{String(v)}</div></div>))}</div>
                     </div>
 
                     <DetailSparklines device={sel} onExpand={()=>setView("telemetry")}/>
