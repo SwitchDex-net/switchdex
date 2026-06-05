@@ -126,12 +126,11 @@ async def main():
             log.info("open-device telemetry sampled (%d rows)", n)
         except Exception as e:  # noqa: BLE001
             log.error("open telemetry sample failed: %s", e)
-    # sample open-protocol (SNMP) device telemetry. The interface-counter walk
-    # makes this heavier than a 30s slot can reliably hold, so give it room:
-    # coalesce missed runs, allow a couple of overlapping instances, and a grace
-    # window — otherwise APScheduler silently skips runs ("max instances reached").
-    sched.add_job(sample_open_metrics, "interval",
-                  seconds=max(60, settings.metrics_interval),
+    # sample open-protocol (SNMP) device telemetry every 60s. We intentionally do
+    # NOT use settings.metrics_interval here (it can be set high, e.g. 300s, which
+    # makes throughput graphs too coarse). The interface-counter walk is heavy, so
+    # give the job overlap tolerance and coalesce missed runs.
+    sched.add_job(sample_open_metrics, "interval", seconds=60,
                   max_instances=2, coalesce=True, misfire_grace_time=30)
 
     sched.add_job(discover_neighbors, "interval", minutes=15)
@@ -147,8 +146,8 @@ async def main():
     sched.add_job(cve_nightly_scan,
                   CronTrigger(hour=0, minute=0, timezone="America/Chicago"))
     sched.start()
-    log.info("scheduler started — daily backup %02d:%02d, controller poll 5m, alert eval 60s, telemetry %ds",
-             settings.backup_hour, settings.backup_minute, settings.metrics_interval)
+    log.info("scheduler started — daily backup %02d:%02d, controller poll 5m, alert eval 60s, telemetry 60s",
+             settings.backup_hour, settings.backup_minute)
     # kick off an initial neighbor discovery so the topology map populates
     # without waiting for the first 15-minute interval
     asyncio.create_task(discover_neighbors())
