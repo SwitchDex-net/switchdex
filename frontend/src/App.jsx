@@ -1012,6 +1012,27 @@ function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs, onOpe
     return () => { alive = false; };
   }, [d.id]);
 
+  // total device throughput (sum of latest rx/tx across all its interfaces) —
+  // works for SNMP devices (switch/firewall ports) and APs ("WLAN (clients)")
+  const [tput, setTput] = useState(null);   // {rx, tx} bps | null
+  useEffect(() => {
+    if (MOCK_MODE) { setTput(null); return; }
+    let alive = true;
+    api.metricInterfaces(d.id, "1h")
+      .then(r => { if (alive) {
+        const ifs = r.interfaces || {};
+        let rx = 0, tx = 0;
+        for (const nm of Object.keys(ifs)) {
+          const rxs = ifs[nm].rx||[], txs = ifs[nm].tx||[];
+          if (rxs.length) rx += rxs[rxs.length-1].v;
+          if (txs.length) tx += txs[txs.length-1].v;
+        }
+        setTput({rx, tx});
+      }})
+      .catch(() => { if (alive) setTput(null); });
+    return () => { alive = false; };
+  }, [d.id]);
+
   return (
     <>
       {/* click-away scrim — transparent so the page stays visible behind it */}
@@ -1031,6 +1052,9 @@ function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs, onOpe
             <div className="metric-card"><div className="metric-label">CPU</div><div className="metric-val">{cpu!=null?cpu+"%":"—"}</div></div>
             <div className="metric-card"><div className="metric-label">Memory</div><div className="metric-val">{mem!=null?mem+"%":"—"}</div></div>
             <div className="metric-card"><div className="metric-label">Uptime</div><div className="metric-val" style={{fontSize:14}}>{uptime}</div></div>
+            <div className="metric-card"><div className="metric-label">Rx</div><div className="metric-val" style={{fontSize:14,color:"#58a6ff"}}>{tput!=null?fmtBps(tput.rx):"—"}</div></div>
+            <div className="metric-card"><div className="metric-label">Tx</div><div className="metric-val" style={{fontSize:14,color:"#3fb950"}}>{tput!=null?fmtBps(tput.tx):"—"}</div></div>
+            <div className="metric-card"><div className="metric-label">Total</div><div className="metric-val" style={{fontSize:14}}>{tput!=null?fmtBps(tput.rx+tput.tx):"—"}</div></div>
           </div>
           <div style={{fontSize:12,color:"#8b949e",lineHeight:1.9}}>
             <div><span style={{color:"#6e7681"}}>Type:</span> {d.type}{d.role?` · ${d.role}`:""}</div>
