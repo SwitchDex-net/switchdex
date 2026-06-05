@@ -140,3 +140,25 @@ async def device_metrics(device_id: int, _: dict = Depends(get_current_user)):
         ctrl = await s.get(Controller, d.controller_id)
         ext = d.external_id
     return await connectors.fetch_metrics(ctrl, ext)
+
+
+@router.get("/clients")
+async def clients(_: dict = Depends(get_current_user)):
+    """Fleet-wide list of connected clients across all enabled controllers,
+    in the vendor-neutral shape. Aggregated so the UI is source-agnostic."""
+    async with SessionLocal() as s:
+        ctrls = (await s.execute(
+            select(Controller).where(Controller.enabled == True))).scalars().all()  # noqa: E712
+    out = []
+    for ctrl in ctrls:
+        try:
+            cl = await connectors.list_clients(ctrl)
+            for c in cl:
+                c["controller"] = ctrl.name
+            out.extend(cl)
+        except Exception as e:  # noqa: BLE001
+            # one bad controller shouldn't blank the whole view
+            continue
+    # build the AP filter list from the clients themselves (names present)
+    aps = sorted({c["ap_name"] for c in out if c.get("ap_name")})
+    return {"clients": out, "aps": aps, "count": len(out)}

@@ -67,6 +67,7 @@ const api = {
   syncController: (id) => _req(`/integrations/${id}/sync`, { method: "POST" }),
   deleteController: (id) => _req(`/integrations/${id}`, { method: "DELETE" }),
   deviceMetrics: (id) => _req(`/integrations/devices/${id}/metrics`),
+  fleetClients: () => _req("/integrations/clients"),
   getTopology: () => _req("/topology"),
   discoverTopology: () => _req("/topology/discover", { method: "POST" }),
   listAlerts: (state="") => _req(`/alerts${state?`?state=${state}`:""}`),
@@ -314,6 +315,8 @@ tbody tr:hover .row-acts{opacity:1;}
 .qv-scrim{position:absolute;inset:0;background:rgba(1,4,9,.35);z-index:210;}
 .sev-pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;white-space:nowrap;}
 .qv-drawer{position:absolute;top:0;right:0;bottom:0;width:340px;background:#0d1117;border-left:1px solid #30363d;box-shadow:-8px 0 24px rgba(0,0,0,.4);z-index:211;display:flex;flex-direction:column;animation:qv-in .18s ease-out;}
+.qv-clients{display:flex;align-items:center;justify-content:space-between;margin-top:16px;padding:11px 13px;background:#161b22;border:1px solid #21262d;border-radius:8px;cursor:pointer;font-size:13px;transition:all .12s;}
+.qv-clients:hover{background:#1c2230;border-color:#388bfd;}
 @keyframes qv-in{from{transform:translateX(20px);opacity:.4;}to{transform:translateX(0);opacity:1;}}
 .qv-hdr{display:flex;align-items:center;gap:10px;padding:14px 14px 12px;border-bottom:1px solid #21262d;}
 .qv-name{font-weight:600;color:#e6edf3;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -975,7 +978,7 @@ function DevIcon({type,size=16}){ const c=devColor(type); const ico={router:IC.r
 
 // Compact device summary that overlays in place (from topology/alerts/etc.)
 // instead of navigating away. Live metrics come from the fleet summary map.
-function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs}) {
+function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs, onOpenClients}) {
   const col = devColor(d.type);
   const m = metrics || {};
   const cpu = m.cpu != null ? Math.round(m.cpu) : null;
@@ -1018,6 +1021,13 @@ function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs}) {
             {d.location && <div><span style={{color:"#6e7681"}}>Location:</span> {d.location}</div>}
             {d.os && <div><span style={{color:"#6e7681"}}>OS:</span> {d.os}</div>}
           </div>
+
+          {d.type==="ap" && onOpenClients && (
+            <div className="qv-clients" onClick={()=>onOpenClients(d.name)} title="View connected clients">
+              <span style={{display:"flex",alignItems:"center",gap:8}}>{IC.user} Connected clients</span>
+              <span style={{display:"flex",alignItems:"center",gap:6,color:"#58a6ff"}}>{m.clients!=null?m.clients:"view"} ›</span>
+            </div>
+          )}
 
           {!ro && (
             <div style={{marginTop:16}}>
@@ -2209,7 +2219,7 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
 function AppInner({auth, onLogout}) {
   const [devices, setDevices] = useState(MOCK_MODE ? INIT_DEVICES : []);
   const [loading, setLoading] = useState(!MOCK_MODE);
-  const VIEWS = ["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry"];
+  const VIEWS = ["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"];
   // Parse the URL hash into { view, selId }. Forms: #/inventory, #/devices/5
   function parseHash(){
     const h = (window.location.hash || "").replace(/^#\/?/, "");
@@ -2341,6 +2351,7 @@ function AppInner({auth, onLogout}) {
   // Quick-view overlay: opening a device from another view (topology, alerts,
   // archival) pops a summary in place rather than yanking you to the inventory.
   const [quickViewId, setQuickViewId] = useState(null);
+  const [clientsFilterAp, setClientsFilterAp] = useState(null);   // AP name to pre-filter Clients view (from quickview link)
   function openQuickView(id){ setQuickViewId(id); }
   function quickViewToFull(id){ setQuickViewId(null); pickDevice(id); }
   function quickViewToConfigs(id){ setQuickViewId(null); openDeviceConfigs(id); }
@@ -2389,9 +2400,9 @@ function AppInner({auth, onLogout}) {
       <div className="app">
         <div className="sidebar">
           <div className="sb-logo">{IC.layers}</div>
-          {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
+          {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["users","Clients","clients"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
             <div key={lb} className={`sb-item ${view===vw?"active":""}`} title={lb}
-              onClick={()=>{ if(["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry"].includes(vw)){ setView(vw); } }}>
+              onClick={()=>{ if(["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"].includes(vw)){ setView(vw); } }}>
               <SBIcon n={ic}/>{badge&&<span className="sb-badge"/>}
             </div>
           ))}
@@ -2399,7 +2410,7 @@ function AppInner({auth, onLogout}) {
 
         <div className="main">
           <div className="topbar">
-            <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : <>Device <span>Inventory</span></>}</span>
+            <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : view==="clients" ? <>Connected <span>Clients</span></> : <>Device <span>Inventory</span></>}</span>
             {view==="inventory" && <button className="tb-btn" onClick={()=>setShowAdd(true)}>{IC.plus} Add device</button>}
             <button className="tb-btn" onClick={doRefresh} disabled={refreshing} title="Reload device data and metrics" style={{minWidth:92,justifyContent:"center"}}>
               {refreshing
@@ -2424,6 +2435,8 @@ function AppInner({auth, onLogout}) {
             <TopologyView devices={devices} onOpenDevice={openQuickView}/>
           ) : view==="integrations" ? (
             <IntegrationsView auth={auth}/>
+          ) : view==="clients" ? (
+            <ClientsView initialAp={clientsFilterAp} onConsumeFilter={()=>setClientsFilterAp(null)}/>
           ) : view==="configmgmt" ? (
             <FleetConfigView devices={devices} archive={archive} onBackupAll={backupAll} onOpenDevice={openQuickView}/>
           ) : (
@@ -2587,7 +2600,8 @@ function AppInner({auth, onLogout}) {
         {showAdd && <AddDeviceModal onClose={()=>setShowAdd(false)} onAdd={addDevice}/>}
         {quickViewId != null && (() => { const qd = devices.find(d=>d.id===quickViewId); return qd ? (
           <QuickView device={qd} metrics={fleetMetrics[qd.id]} onClose={()=>setQuickViewId(null)}
-            onOpenFull={()=>quickViewToFull(qd.id)} onOpenConfigs={()=>quickViewToConfigs(qd.id)}/>
+            onOpenFull={()=>quickViewToFull(qd.id)} onOpenConfigs={()=>quickViewToConfigs(qd.id)}
+            onOpenClients={(apName)=>{ setClientsFilterAp(apName); setQuickViewId(null); setView("clients"); }}/>
         ) : null; })()}
         {editId != null && (() => { const ed = devices.find(d=>d.id===editId); return ed ? (
           <EditDeviceModal device={ed} onClose={()=>setEditId(null)}
@@ -2844,6 +2858,85 @@ function mockEvaluate(devices, policies) {
 const SEED_POLICIES = [];   // empty by default — admin writes all rules
 
 const SEV_COLOR = { CRITICAL:"#f85149", HIGH:"#e3b341", MEDIUM:"#58a6ff", LOW:"#8b949e" };
+
+// Fleet-wide connected clients across all controllers, with AP filtering.
+function ClientsView({initialAp, onConsumeFilter}) {
+  const [data, setData] = useState(null);   // {clients, aps, count}
+  const [apFilter, setApFilter] = useState(initialAp || "");
+  const [sort, setSort] = useState({key:"name", dir:1});
+  const [q, setQ] = useState("");
+
+  useEffect(()=>{
+    if (MOCK_MODE) { setData({clients:[],aps:[],count:0}); return; }
+    api.fleetClients().then(setData).catch(()=>setData({clients:[],aps:[],count:0}));
+  }, []);
+  useEffect(()=>{ if(initialAp){ setApFilter(initialAp); onConsumeFilter && onConsumeFilter(); } }, [initialAp]);
+
+  if (data===null) return <div className="cfg-loading"><span className="cfg-spin"/> Loading clients…</div>;
+
+  const aps = data.aps || [];
+  let rows = (data.clients||[]).slice();
+  if (apFilter) rows = rows.filter(c=>c.ap_name===apFilter);
+  if (q.trim()) {
+    const needle = q.trim().toLowerCase();
+    rows = rows.filter(c=>(c.name||"").toLowerCase().includes(needle) || (c.ip||"").includes(needle) || (c.mac||"").toLowerCase().includes(needle));
+  }
+  const cmp = (a,b)=>{
+    let x=a[sort.key], y=b[sort.key];
+    if (typeof x==="string") { x=(x||"").toLowerCase(); y=(y||"").toLowerCase(); }
+    return (x<y?-1:x>y?1:0)*sort.dir;
+  };
+  rows.sort(cmp);
+  const setSortKey = (k)=> setSort(s=> s.key===k ? {key:k,dir:-s.dir} : {key:k,dir:1});
+  const sortArrow = (k)=> sort.key===k ? (sort.dir>0?" ▲":" ▼") : "";
+
+  const sigColor = (rssi)=> rssi>=-55 ? "#3fb950" : rssi>=-70 ? "#e3b341" : "#f85149";
+  const fmtRate = (bps)=> bps>=1e9 ? (bps/1e9).toFixed(1)+"G" : bps>=1e6 ? Math.round(bps/1e6)+"M" : Math.round(bps/1e3)+"K";
+
+  return (
+    <div className="content">
+      <div className="fleet-wrap">
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+          <div style={{fontSize:13,color:"#8b949e"}}>{rows.length} of {data.count} client{data.count===1?"":"s"}{apFilter?` on ${apFilter}`:""}</div>
+          <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+            <input className="ed-input" style={{width:180,padding:"6px 10px"}} placeholder="search name / IP / MAC" value={q} onChange={e=>setQ(e.target.value)}/>
+            <select className="ed-select" style={{width:170,padding:"6px 10px"}} value={apFilter} onChange={e=>setApFilter(e.target.value)}>
+              <option value="">All access points</option>
+              {aps.map(a=><option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {rows.length===0 ? <div className="cfg-empty">No clients{apFilter?` on ${apFilter}`:""}.</div> : (
+          <div className="if-tbl">
+            <div className="if-hdr">
+              <span style={{flex:1,cursor:"pointer"}} onClick={()=>setSortKey("name")}>Client{sortArrow("name")}</span>
+              <span style={{width:120,cursor:"pointer"}} onClick={()=>setSortKey("ip")}>IP{sortArrow("ip")}</span>
+              <span style={{width:130,cursor:"pointer"}} onClick={()=>setSortKey("ap_name")}>Access point{sortArrow("ap_name")}</span>
+              <span style={{width:110}}>SSID / band</span>
+              <span style={{width:80,textAlign:"right",cursor:"pointer"}} onClick={()=>setSortKey("rssi")}>Signal{sortArrow("rssi")}</span>
+              <span style={{width:110,textAlign:"right"}}>Link rate</span>
+            </div>
+            {rows.map(c=>(
+              <div key={c.mac} className="if-row" style={{cursor:"default"}}>
+                <span style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name}</div>
+                  <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:11,color:"#6e7681"}}>{c.mac}</div>
+                </span>
+                <span style={{width:120,fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>{c.ip||"—"}</span>
+                <span style={{width:130,fontSize:12}}>{c.ap_name||"—"}</span>
+                <span style={{width:110,fontSize:12}}>{c.ssid||"—"}{c.band?<span style={{color:"#6e7681"}}> · {c.band}G</span>:""}</span>
+                <span style={{width:80,textAlign:"right",fontSize:12,color:sigColor(c.rssi)}}>{c.rssi?`${c.rssi} dBm`:"—"}</span>
+                <span style={{width:110,textAlign:"right",fontSize:12,color:"#8b949e"}}>↓{fmtRate(c.rx_rate_bps)} ↑{fmtRate(c.tx_rate_bps)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{marginTop:10,fontSize:11,color:"#6e7681"}}>Link rate is the negotiated Wi-Fi PHY rate, not live throughput.</div>
+      </div>
+    </div>
+  );
+}
 
 // Security / vulnerability scanning view — CVE matching from the NVD.
 function SecurityView({auth, devices, onOpenDevice}) {
