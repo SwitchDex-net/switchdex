@@ -1130,14 +1130,25 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
   const [busy,setBusy] = useState(false);
   const [result,setResult] = useState(null);     // {ok, output, verify, error}
 
-  // live throughput history for this interface (rx/tx), if telemetry has it
+  // live throughput history for this interface (rx/tx), if telemetry has it.
+  // Config keys come from ifDescr (e.g. "GigabitEthernet1/0/1") but telemetry
+  // labels come from ifName (e.g. "Gi1/0/1"), so match on a normalized form.
   const [ifMetrics,setIfMetrics] = useState(null);  // {rx:[{t,v}], tx:[{t,v}]} | undefined
   const [ifRange,setIfRange] = useState("6h");
   useEffect(()=>{
     if (MOCK_MODE) { setIfMetrics(undefined); return; }
     setIfMetrics(null);
     api.metricInterfaces(device.id, ifRange)
-      .then(r=>setIfMetrics((r.interfaces||{})[ifaceName]))
+      .then(r=>{
+        const series = r.interfaces||{};
+        let hit = series[ifaceName];
+        if (!hit) {
+          const want = normIfName(ifaceName);
+          const key = Object.keys(series).find(k=>normIfName(k)===want);
+          hit = key ? series[key] : undefined;
+        }
+        setIfMetrics(hit);
+      })
       .catch(()=>setIfMetrics(undefined));
   }, [device.id, ifaceName, ifRange]);
 
@@ -1612,6 +1623,22 @@ function EditDeviceModal({device, onClose, onSaved}) {
 // Open/recent alerts scoped to a single device, shown in its detail view.
 // Per-interface throughput/status/errors for a device, with a table overview
 // and click-through to an rx/tx chart. Data comes from stored MetricSamples.
+// Canonicalize an interface name so ifDescr (long, "GigabitEthernet1/0/1") and
+// ifName (short, "Gi1/0/1") forms compare equal. Lowercase, strip non-alnum,
+// and fold common Cisco/vendor long names to their short prefixes.
+function normIfName(name){
+  let s = String(name||"").toLowerCase();
+  const map = [
+    ["tengigabitethernet","te"], ["fortygigabitethernet","fo"],
+    ["twentyfivegige","twe"], ["hundredgige","hu"],
+    ["gigabitethernet","gi"], ["fastethernet","fa"],
+    ["ethernet","eth"], ["portchannel","po"], ["vlan","vl"],
+    ["loopback","lo"], ["tunnel","tu"], ["management","mgmt"],
+  ];
+  for (const [long,short] of map){ if (s.startsWith(long)){ s = short + s.slice(long.length); break; } }
+  return s.replace(/[^a-z0-9/.]/g,"");
+}
+
 function fmtBps(bps){
   const n = Number(bps) || 0;
   if (n >= 1e9) return (n/1e9).toFixed(2)+" Gbps";
