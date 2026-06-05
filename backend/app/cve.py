@@ -410,7 +410,23 @@ async def scan_device(device_id: int) -> dict:
         if dev:
             dev.cve_covered = covered
             dev.cve_scanned_at = dt.datetime.utcnow()
+            dev_name = dev.name
+        else:
+            dev_name = f"device {device_id}"
         await s.commit()
+
+    # feed the automation engine when notable CVEs are found
+    if findings:
+        order = ["critical", "high", "medium", "low"]
+        top = next((sv for sv in order if by_sev.get(sv)), "")
+        if top in ("critical", "high"):
+            try:
+                from . import automations as autoeng
+                await autoeng.on_event("cve_found",
+                                       {"device_id": device_id, "device_name": dev_name,
+                                        "severity": top, "count": len(findings)})
+            except Exception:  # noqa: BLE001
+                pass
 
     return {"ok": True, "cpe": cpe, "matched": len(findings),
             "by_severity": by_sev, "covered": covered}

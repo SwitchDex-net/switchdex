@@ -15,6 +15,7 @@ from .compliance_api import router as compliance_router
 from .cve_api import router as security_router
 from .telemetry_api import router as telemetry_router
 from .dashboard_api import router as dashboard_router
+from .automations_api import router as automations_router
 from . import alerts as alert_engine
 from . import auth as A
 from . import configstore as store
@@ -84,6 +85,7 @@ app.include_router(compliance_router)
 app.include_router(security_router)
 app.include_router(telemetry_router)
 app.include_router(dashboard_router)
+app.include_router(automations_router)
 
 
 @app.get("/api/health")

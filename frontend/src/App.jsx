@@ -109,6 +109,15 @@ const api = {
   fleetSummary: () => _req("/metrics/fleet-summary"),
   dashboardLayout: () => _req("/dashboard/layout"),
   saveDashboardLayout: (cards) => _req("/dashboard/layout", { method: "PUT", body: {cards} }),
+  // automations
+  listAutomations: () => _req("/automations"),
+  createAutomation: (a) => _req("/automations", { method: "POST", body: a }),
+  updateAutomation: (id, a) => _req(`/automations/${id}`, { method: "PUT", body: a }),
+  deleteAutomation: (id) => _req(`/automations/${id}`, { method: "DELETE" }),
+  testAutomation: (id) => _req(`/automations/${id}/test`, { method: "POST" }),
+  automationRuns: (limit=50) => _req(`/automations/runs?limit=${limit}`),
+  automationPending: () => _req("/automations/pending"),
+  approveRun: (runId, approve=true) => _req(`/automations/runs/${runId}/approve`, { method: "POST", body: {approve} }),
   connectSSH: (id) => {
     const tok = _loadTok();
     const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -452,6 +461,18 @@ tbody tr:hover .row-acts{opacity:1;}
 .dash-ctl:disabled{opacity:.35;cursor:default;}
 .dash-add{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px;cursor:pointer;transition:border-color .12s;}
 .dash-add:hover{border-color:#388bfd;}
+.auto-pending{background:#1c1709;border:1px solid #5c4708;border-radius:10px;padding:14px 16px;margin-bottom:16px;}
+.auto-pend-row{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid #30363d;}
+.auto-pend-row:first-of-type{border-top:none;}
+.auto-tag{font-size:10px;padding:1px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.04em;}
+.auto-tag.remed{background:#1f2937;color:#58a6ff;border:1px solid #1f6feb;}
+.auto-tag.appr{background:#2d2410;color:#e3b341;border:1px solid #5c4708;}
+.auto-lbl{display:block;font-size:12px;color:#8b949e;margin:10px 0 4px;}
+.auto-toggle{display:flex;align-items:center;gap:8px;font-size:13px;margin:8px 0;cursor:pointer;}
+.auto-hint{font-size:11px;color:#6e7681;}
+.auto-danger{border-color:#5c2626;}
+.auto-armed-warn{background:#2d1212;border:1px solid #5c2626;color:#f0a3a3;border-radius:6px;padding:8px 10px;font-size:12px;margin-top:10px;}
+.auto-preview{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:10px;font-size:12px;color:#c9d1d9;white-space:pre-wrap;overflow-x:auto;font-family:'IBM Plex Mono',monospace;}
 @media (max-width:900px){.dash-kpis{grid-template-columns:repeat(2,1fr);}.dash-cols,.dash-cards{grid-template-columns:1fr;}}
 .fr-name{font-weight:500;color:#e6edf3;font-size:13px;}
 .fr-meta{font-size:11px;color:#8b949e;font-family:'IBM Plex Mono',monospace;}
@@ -994,6 +1015,7 @@ const SBIcon = ({n}) => {
     plug:<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M15 3l6 6-3 3-6-6 3-3zM9 21l-6-6 3-3 6 6-3 3z"/></svg>,
     settings:<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
     wifi:<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12.55a11 11 0 0114 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>,
+    bolt:<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
   };
   return m[n]||null;
 };
@@ -2283,7 +2305,7 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
 function AppInner({auth, onLogout}) {
   const [devices, setDevices] = useState(MOCK_MODE ? INIT_DEVICES : []);
   const [loading, setLoading] = useState(!MOCK_MODE);
-  const VIEWS = ["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"];
+  const VIEWS = ["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients","automations"];
   // Parse the URL hash into { view, selId }. Forms: #/inventory, #/devices/5
   function parseHash(){
     const h = (window.location.hash || "").replace(/^#\/?/, "");
@@ -2517,9 +2539,9 @@ function AppInner({auth, onLogout}) {
       <div className="app">
         <div className="sidebar">
           <div className="sb-logo">{IC.layers}</div>
-          {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["wifi","Wireless Clients","clients"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
+          {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["wifi","Wireless Clients","clients"],["bolt","Automations","automations"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
             <div key={lb} className={`sb-item ${view===vw?"active":""}`} title={lb}
-              onClick={()=>{ if(["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"].includes(vw)){ setView(vw); } }}>
+              onClick={()=>{ if(["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients","automations"].includes(vw)){ setView(vw); } }}>
               <SBIcon n={ic}/>{badge&&<span className="sb-badge"/>}
             </div>
           ))}
@@ -2527,7 +2549,7 @@ function AppInner({auth, onLogout}) {
 
         <div className="main">
           <div className="topbar">
-            <span className="topbar-title">{view==="dashboard" ? <>Dashboard</> : view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : view==="clients" ? <>Wireless <span>Clients</span></> : <>Device <span>Inventory</span></>}</span>
+            <span className="topbar-title">{view==="dashboard" ? <>Dashboard</> : view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : view==="clients" ? <>Wireless <span>Clients</span></> : view==="automations" ? <>Automations</> : <>Device <span>Inventory</span></>}</span>
             {view==="inventory" && <button className="tb-btn" onClick={()=>setShowAdd(true)}>{IC.plus} Add device</button>}
             <button className="tb-btn" onClick={doRefresh} disabled={refreshing} title="Reload device data and metrics" style={{minWidth:92,justifyContent:"center"}}>
               {refreshing
@@ -2557,6 +2579,8 @@ function AppInner({auth, onLogout}) {
             <IntegrationsView auth={auth}/>
           ) : view==="clients" ? (
             <ClientsView initialAp={clientsFilterAp} onConsumeFilter={()=>setClientsFilterAp(null)}/>
+          ) : view==="automations" ? (
+            <AutomationsView auth={auth} devices={devices}/>
           ) : view==="configmgmt" ? (
             <FleetConfigView devices={devices} archive={archive} onBackupAll={backupAll} onOpenDevice={openQuickView}/>
           ) : (
@@ -2989,6 +3013,263 @@ function mockEvaluate(devices, policies) {
 const SEED_POLICIES = [];   // empty by default — admin writes all rules
 
 const SEV_COLOR = { CRITICAL:"#f85149", HIGH:"#e3b341", MEDIUM:"#58a6ff", LOW:"#8b949e" };
+
+// ─── Automations: trigger → scope → action, with remediation guardrails ───
+const AUTO_TRIGGERS = [
+  {v:"alert_fired",      label:"An alert fires"},
+  {v:"metric_threshold", label:"A metric crosses a threshold"},
+  {v:"device_down",      label:"A device goes down"},
+  {v:"cve_found",        label:"A vulnerability is found"},
+  {v:"config_drift",     label:"Config drift is detected"},
+];
+const AUTO_ACTIONS = [
+  {v:"notify",            label:"Send notification",   remediation:false},
+  {v:"backup_config",     label:"Back up config",      remediation:false},
+  {v:"run_scan",          label:"Run CVE scan",        remediation:false},
+  {v:"create_alert",      label:"Raise an alert",      remediation:false},
+  {v:"push_config",       label:"Push config snippet", remediation:true},
+  {v:"disable_interface", label:"Disable an interface",remediation:true},
+];
+const REMEDIATION_SET = new Set(["push_config","disable_interface"]);
+
+function AutomationsView({auth, devices}) {
+  const isAdmin = auth.user.role === "admin";
+  const [autos, setAutos] = useState(null);
+  const [runs, setRuns] = useState([]);
+  const [pending, setPending] = useState([]);
+  const [editing, setEditing] = useState(null);   // automation object being edited, or "new"
+  const [tab, setTab] = useState("rules");         // rules | history
+
+  function reload(){
+    api.listAutomations().then(setAutos).catch(()=>setAutos([]));
+    api.automationRuns(50).then(setRuns).catch(()=>setRuns([]));
+    api.automationPending().then(setPending).catch(()=>setPending([]));
+  }
+  useEffect(()=>{ if(MOCK_MODE){setAutos([]);return;} reload(); }, []);
+
+  function approve(runId, ok){ api.approveRun(runId, ok).then(()=>reload()); }
+
+  if (autos===null) return <div className="content"><div className="fleet-wrap"><div className="cfg-loading"><span className="cfg-spin"/> Loading automations…</div></div></div>;
+
+  if (editing) return <AutomationEditor auth={auth} devices={devices} initial={editing===" new"?null:editing}
+    onCancel={()=>setEditing(null)} onSaved={()=>{ setEditing(null); reload(); }}/>;
+
+  const statusColor = (s)=>({executed:"#3fb950",dry_run:"#58a6ff",pending_approval:"#e3b341",rejected:"#8b949e",skipped:"#8b949e",error:"#f85149",blocked:"#f85149"}[s]||"#8b949e");
+
+  return (
+    <div className="content"><div className="fleet-wrap">
+      {pending.length>0 && (
+        <div className="auto-pending">
+          <div className="sec-title" style={{color:"#e3b341"}}>⚠ {pending.length} remediation{pending.length>1?"s":""} awaiting approval</div>
+          {pending.map(p=>(
+            <div key={p.id} className="auto-pend-row">
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13}}>{p.automation}</div>
+                <div style={{fontSize:12,color:"#8b949e"}}>{p.trigger} · {p.device_ids.length} device(s)</div>
+                <div style={{fontSize:11,color:"#6e7681",whiteSpace:"pre-wrap",marginTop:4}}>{p.detail}</div>
+              </div>
+              {isAdmin && <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <button className="al-btn ack" onClick={()=>approve(p.id,true)}>Approve &amp; run</button>
+                <button className="al-btn" onClick={()=>approve(p.id,false)}>Reject</button>
+              </div>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:8,marginBottom:16,alignItems:"center"}}>
+        <button className={`fbtn ${tab==="rules"?"on":""}`} onClick={()=>setTab("rules")}>Automations</button>
+        <button className={`fbtn ${tab==="history"?"on":""}`} onClick={()=>setTab("history")}>Run history</button>
+        {isAdmin && tab==="rules" && <button className="al-btn ack" style={{marginLeft:"auto"}} onClick={()=>setEditing(" new")}>+ New automation</button>}
+      </div>
+
+      {tab==="rules" ? (
+        autos.length===0 ? <div className="cfg-empty">No automations yet.{isAdmin?" Click “New automation” to create one.":""}</div> : (
+          <div className="if-tbl">
+            {autos.map(a=>(
+              <div key={a.id} className="if-row" style={{cursor:isAdmin?"pointer":"default"}} onClick={()=>isAdmin&&setEditing(a)}>
+                <span className="led" style={{width:8,height:8,borderRadius:"50%",background:a.enabled?"#3fb950":"#6e7681",display:"inline-block",flexShrink:0,marginRight:10}}/>
+                <span style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:14,display:"flex",alignItems:"center",gap:8}}>{a.name}
+                    {a.is_remediation && <span className="auto-tag remed">{a.armed?"armed":"dry-run"}</span>}
+                    {a.is_remediation && a.requires_approval && <span className="auto-tag appr">approval</span>}
+                  </div>
+                  <div style={{fontSize:12,color:"#8b949e"}}>
+                    {(AUTO_TRIGGERS.find(t=>t.v===a.trigger.event)||{}).label || (a.trigger_type==="schedule"?`Schedule: ${a.trigger.cron||""}`:a.trigger_type)}
+                    {" → "}{(AUTO_ACTIONS.find(x=>x.v===a.action_type)||{}).label||a.action_type}
+                  </div>
+                </span>
+                <span style={{fontSize:12,color:"#6e7681"}}>{a.scope_type==="all"?"all devices":a.scope_type}</span>
+              </div>
+            ))}
+          </div>
+        )
+      ) : (
+        runs.length===0 ? <div className="cfg-empty">No runs recorded yet.</div> : (
+          <div className="if-tbl">
+            {runs.map(r=>(
+              <div key={r.id} className="if-row" style={{alignItems:"flex-start"}}>
+                <span className="led" style={{width:8,height:8,borderRadius:"50%",background:statusColor(r.status),display:"inline-block",flexShrink:0,marginRight:10,marginTop:5}}/>
+                <span style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13}}>{r.automation} <span style={{color:"#6e7681"}}>· {r.status}</span></div>
+                  <div style={{fontSize:12,color:"#8b949e"}}>{r.trigger}{r.approved_by?` · approved by ${r.approved_by}`:""}</div>
+                  {r.detail && <div style={{fontSize:11,color:"#6e7681",whiteSpace:"pre-wrap",marginTop:3,fontFamily:"'IBM Plex Mono',monospace"}}>{r.detail}</div>}
+                </span>
+                <span style={{fontSize:11,color:"#6e7681",whiteSpace:"nowrap"}}>{tsAgo(Date.parse(r.ts))}</span>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </div></div>
+  );
+}
+
+function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
+  const blank = {name:"",description:"",enabled:true,trigger_type:"event",
+    trigger:{event:"metric_threshold",metric:"cpu",op:">",value:90},
+    scope_type:"all",scope:{},condition:{},action_type:"notify",action:{},
+    requires_approval:true,armed:false,cooldown_minutes:15,max_devices_per_run:5,protect_uplink:true};
+  const [a, setA] = useState(initial ? {...blank, ...initial, trigger:{...initial.trigger}, action:{...initial.action}, scope:{...initial.scope}} : blank);
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const set = (k,v)=>setA(p=>({...p,[k]:v}));
+  const setT = (k,v)=>setA(p=>({...p,trigger:{...p.trigger,[k]:v}}));
+  const setAct = (k,v)=>setA(p=>({...p,action:{...p.action,[k]:v}}));
+  const isRemed = REMEDIATION_SET.has(a.action_type);
+
+  function save(){
+    setBusy(true);
+    const payload = {...a};
+    const fn = initial ? api.updateAutomation(initial.id, payload) : api.createAutomation(payload);
+    fn.then(onSaved).catch(e=>alert("Save failed: "+e.message)).finally(()=>setBusy(false));
+  }
+  function doTest(){
+    if (!initial) { alert("Save the automation first, then Test."); return; }
+    api.testAutomation(initial.id).then(r=>setPreview(r.preview)).catch(e=>setPreview("Test failed: "+e.message));
+  }
+  function del(){ if(confirm("Delete this automation?")) api.deleteAutomation(initial.id).then(onSaved); }
+
+  return (
+    <div className="content"><div className="fleet-wrap" style={{maxWidth:720}}>
+      <div style={{display:"flex",alignItems:"center",marginBottom:18}}>
+        <button className="al-btn" onClick={onCancel}>← Back</button>
+        <div style={{marginLeft:12,fontSize:16,fontWeight:600}}>{initial?"Edit automation":"New automation"}</div>
+      </div>
+
+      <div className="set-section">
+        <label className="auto-lbl">Name</label>
+        <input className="set-input" value={a.name} onChange={e=>set("name",e.target.value)} placeholder="e.g. Quarantine port on critical CVE"/>
+        <label className="auto-lbl">Description</label>
+        <input className="set-input" value={a.description} onChange={e=>set("description",e.target.value)} placeholder="optional"/>
+        <label className="auto-toggle"><input type="checkbox" checked={a.enabled} onChange={e=>set("enabled",e.target.checked)}/> Enabled</label>
+      </div>
+
+      <div className="set-section">
+        <div className="set-h">Trigger</div>
+        <label className="auto-lbl">Type</label>
+        <select className="set-input" value={a.trigger_type} onChange={e=>set("trigger_type",e.target.value)}>
+          <option value="event">Event-driven</option>
+          <option value="schedule">Scheduled (cron)</option>
+        </select>
+        {a.trigger_type==="event" ? (<>
+          <label className="auto-lbl">When</label>
+          <select className="set-input" value={a.trigger.event||"metric_threshold"} onChange={e=>setT("event",e.target.value)}>
+            {AUTO_TRIGGERS.map(t=><option key={t.v} value={t.v}>{t.label}</option>)}
+          </select>
+          {a.trigger.event==="metric_threshold" && (
+            <div style={{display:"flex",gap:8,marginTop:8}}>
+              <select className="set-input" value={a.trigger.metric||"cpu"} onChange={e=>setT("metric",e.target.value)}>
+                <option value="cpu">CPU %</option><option value="mem">Memory %</option>
+              </select>
+              <select className="set-input" style={{width:80}} value={a.trigger.op||">"} onChange={e=>setT("op",e.target.value)}>
+                <option value=">">&gt;</option><option value=">=">&ge;</option><option value="<">&lt;</option><option value="<=">&le;</option>
+              </select>
+              <input className="set-input" style={{width:90}} type="number" value={a.trigger.value??90} onChange={e=>setT("value",Number(e.target.value))}/>
+            </div>
+          )}
+          {a.trigger.event==="cve_found" && (<>
+            <label className="auto-lbl">Minimum severity</label>
+            <select className="set-input" value={a.trigger.min_severity||"high"} onChange={e=>setT("min_severity",e.target.value)}>
+              <option value="high">High and above</option><option value="critical">Critical only</option><option value="medium">Medium and above</option>
+            </select>
+          </>)}
+        </>) : (<>
+          <label className="auto-lbl">Cron expression (UTC)</label>
+          <input className="set-input" value={a.trigger.cron||""} onChange={e=>setT("cron",e.target.value)} placeholder="0 2 * * *  (daily at 02:00)"/>
+          <div className="auto-hint">Standard 5-field cron: minute hour day month weekday.</div>
+        </>)}
+      </div>
+
+      <div className="set-section">
+        <div className="set-h">Scope</div>
+        <label className="auto-lbl">Applies to</label>
+        <select className="set-input" value={a.scope_type} onChange={e=>set("scope_type",e.target.value)}>
+          <option value="all">All devices</option>
+          <option value="type">Device type</option>
+          <option value="role">Device role</option>
+        </select>
+        {a.scope_type==="type" && (
+          <select className="set-input" style={{marginTop:8}} value={a.scope.value||"switch"} onChange={e=>set("scope",{value:e.target.value})}>
+            <option value="switch">Switches</option><option value="firewall">Firewalls</option><option value="ap">Access points</option><option value="router">Routers</option>
+          </select>
+        )}
+        {a.scope_type==="role" && (
+          <select className="set-input" style={{marginTop:8}} value={a.scope.value||"access"} onChange={e=>set("scope",{value:e.target.value})}>
+            <option value="access">Access</option><option value="distribution">Distribution</option><option value="core">Core</option><option value="edge">Edge</option>
+          </select>
+        )}
+      </div>
+
+      <div className="set-section">
+        <div className="set-h">Action</div>
+        <select className="set-input" value={a.action_type} onChange={e=>{const v=e.target.value; setA(p=>({...p,action_type:v, requires_approval: REMEDIATION_SET.has(v)?true:p.requires_approval}));}}>
+          {AUTO_ACTIONS.map(x=><option key={x.v} value={x.v}>{x.label}{x.remediation?" (remediation)":""}</option>)}
+        </select>
+        {(a.action_type==="notify"||a.action_type==="create_alert") && (<>
+          <label className="auto-lbl">Title</label>
+          <input className="set-input" value={a.action.title||""} onChange={e=>setAct("title",e.target.value)} placeholder="message title"/>
+          <label className="auto-lbl">Message</label>
+          <input className="set-input" value={a.action.message||""} onChange={e=>setAct("message",e.target.value)}/>
+        </>)}
+        {a.action_type==="push_config" && (<>
+          <label className="auto-lbl">Config snippet</label>
+          <textarea className="set-input" rows={4} style={{fontFamily:"'IBM Plex Mono',monospace",resize:"vertical"}} value={a.action.config||""} onChange={e=>setAct("config",e.target.value)} placeholder="interface Gi1/0/5&#10; shutdown"/>
+        </>)}
+        {a.action_type==="disable_interface" && (<>
+          <label className="auto-lbl">Interface name</label>
+          <input className="set-input" value={a.action.interface||""} onChange={e=>setAct("interface",e.target.value)} placeholder="e.g. Gi1/0/5"/>
+        </>)}
+      </div>
+
+      {isRemed && (
+        <div className="set-section auto-danger">
+          <div className="set-h" style={{color:"#f85149"}}>Remediation guardrails</div>
+          <div className="auto-hint" style={{marginBottom:10}}>This action changes device configuration. These rails protect you — review carefully.</div>
+          <label className="auto-toggle"><input type="checkbox" checked={a.requires_approval} onChange={e=>set("requires_approval",e.target.checked)}/> Require admin approval before running <span className="auto-hint">(recommended)</span></label>
+          <label className="auto-toggle"><input type="checkbox" checked={a.armed} onChange={e=>set("armed",e.target.checked)}/> Armed <span className="auto-hint">(off = dry-run only; computes but never applies)</span></label>
+          <label className="auto-toggle"><input type="checkbox" checked={a.protect_uplink} onChange={e=>set("protect_uplink",e.target.checked)}/> Protect management/uplink interface <span className="auto-hint">(won't cut its own control path)</span></label>
+          <div style={{display:"flex",gap:16,marginTop:8}}>
+            <div><label className="auto-lbl">Cooldown (min)</label><input className="set-input" style={{width:90}} type="number" value={a.cooldown_minutes} onChange={e=>set("cooldown_minutes",Number(e.target.value))}/></div>
+            <div><label className="auto-lbl">Max devices / run</label><input className="set-input" style={{width:90}} type="number" value={a.max_devices_per_run} onChange={e=>set("max_devices_per_run",Number(e.target.value))}/></div>
+          </div>
+          {a.armed && !a.requires_approval && (
+            <div className="auto-armed-warn">⚠ This automation will apply config changes automatically with no human approval. The cooldown, blast-radius cap, and uplink protection still apply.</div>
+          )}
+        </div>
+      )}
+
+      {preview && <div className="set-section"><div className="set-h">Dry-run preview</div><pre className="auto-preview">{preview}</pre></div>}
+
+      <div style={{display:"flex",gap:8,marginTop:16}}>
+        <button className="al-btn ack" onClick={save} disabled={busy||!a.name.trim()}>{busy?"Saving…":"Save automation"}</button>
+        {initial && <button className="al-btn" onClick={doTest}>Test (dry-run)</button>}
+        <button className="al-btn" onClick={onCancel}>Cancel</button>
+        {initial && <button className="al-btn" style={{marginLeft:"auto",color:"#f85149"}} onClick={del}>Delete</button>}
+      </div>
+    </div></div>
+  );
+}
 
 // Fleet-wide connected clients across all controllers, with AP filtering.
 function ClientsView({initialAp, onConsumeFilter}) {

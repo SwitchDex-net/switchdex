@@ -301,6 +301,64 @@ class Setting(Base):
                                                     onupdate=dt.datetime.utcnow)
 
 
+class Automation(Base):
+    """A trigger → (scope/condition) → action rule. Triggers are event-driven
+    (alert/threshold/cve/device-down/config-drift) or scheduled (cron). Actions
+    range from safe (notify/backup/scan/alert) to remediation (push_config /
+    disable_interface). Remediation carries mechanical safety rails that are on
+    by default regardless of the approval setting."""
+    __tablename__ = "automations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # ── trigger ──
+    trigger_type: Mapped[str] = mapped_column(String(16), default="event")   # event | schedule
+    trigger_json: Mapped[str] = mapped_column(Text, default="{}")  # event/threshold params or cron
+
+    # ── scope (blast-radius limiting) ──
+    scope_type: Mapped[str] = mapped_column(String(16), default="all")  # all | type | role | ids
+    scope_json: Mapped[str] = mapped_column(Text, default="{}")   # {"value": "..."} or {"ids":[...]}
+
+    # ── condition (optional extra filter) ──
+    condition_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    # ── action ──
+    action_type: Mapped[str] = mapped_column(String(24), default="notify")
+    action_json: Mapped[str] = mapped_column(Text, default="{}")
+    is_remediation: Mapped[bool] = mapped_column(Boolean, default=False)  # push_config|disable_interface
+
+    # ── guardrails ──
+    requires_approval: Mapped[bool] = mapped_column(Boolean, default=True)
+    armed: Mapped[bool] = mapped_column(Boolean, default=False)   # remediation runs dry until armed
+    cooldown_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    max_devices_per_run: Mapped[int] = mapped_column(Integer, default=5)
+    protect_uplink: Mapped[bool] = mapped_column(Boolean, default=True)  # never cut the mgmt path
+
+    last_fired_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class AutomationRun(Base):
+    """Audit record for every automation execution — what triggered it, which
+    devices it touched, the action result or dry-run output, and approval state.
+    Auditability is itself a guardrail."""
+    __tablename__ = "automation_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    automation_id: Mapped[int] = mapped_column(ForeignKey("automations.id", ondelete="CASCADE"), index=True)
+    ts: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, index=True)
+    trigger_summary: Mapped[str] = mapped_column(String(256), default="")
+    device_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    # pending_approval | approved | rejected | executed | dry_run | skipped | error | blocked
+    status: Mapped[str] = mapped_column(String(16), default="executed", index=True)
+    detail: Mapped[str] = mapped_column(Text, default="")     # dry-run output / result / error / block reason
+    approved_by: Mapped[str] = mapped_column(String(64), default="")
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

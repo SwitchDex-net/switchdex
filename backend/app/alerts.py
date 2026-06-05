@@ -157,6 +157,25 @@ async def evaluate():
                 })
                 log.info("ALERT opened: %s", alert.title)
 
+                # ── feed the automation engine ──
+                try:
+                    from . import automations as autoeng
+                    preset = rule.preset or ""
+                    ctx = {"device_id": dev.id, "device_name": dev.name,
+                           "title": alert.title, "severity": rule.severity}
+                    # always emit the generic alert_fired event
+                    await autoeng.on_event("alert_fired", ctx)
+                    # plus specific events automations can target directly
+                    if preset == "device_down":
+                        await autoeng.on_event("device_down", ctx)
+                    elif preset in ("cpu_high", "mem_high"):
+                        metric = "cpu" if preset == "cpu_high" else "mem"
+                        m = metrics.get(dev.id, {})
+                        await autoeng.on_event("metric_threshold",
+                                               {**ctx, "metric": metric, "value": m.get(metric)})
+                except Exception as e:  # noqa: BLE001
+                    log.warning("automation event dispatch failed: %s", e)
+
         # auto-resolve: open alerts whose condition is no longer true
         open_alerts = (await s.execute(
             select(Alert).where(Alert.state != "resolved"))).scalars().all()
@@ -208,3 +227,9 @@ async def raise_config_changed(device_id: int, device_name: str, detail: str):
         await notify.dispatch(channels, {
             "severity": rule.severity, "title": alert.title, "detail": detail,
             "device": device_name, "time": now.isoformat() + "Z"})
+        try:
+            from . import automations as autoeng
+            await autoeng.on_event("config_drift",
+                                   {"device_id": device_id, "device_name": device_name})
+        except Exception:  # noqa: BLE001
+            pass
