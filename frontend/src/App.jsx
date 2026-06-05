@@ -422,6 +422,11 @@ tbody tr:hover .row-acts{opacity:1;}
 .fleet-row{display:flex;align-items:center;gap:12px;padding:10px 15px;border-bottom:1px solid #161b22;cursor:pointer;transition:background .1s;}
 .fleet-row:last-child{border-bottom:none;}
 .fleet-row:hover{background:#161b22;}
+.if-tbl{border:1px solid #21262d;border-radius:8px;overflow:hidden;}
+.if-hdr{display:flex;align-items:center;gap:12px;padding:8px 14px;background:#161b22;border-bottom:1px solid #21262d;font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.04em;}
+.if-row{display:flex;align-items:center;gap:12px;padding:9px 14px;border-bottom:1px solid #161b22;cursor:pointer;transition:background .1s;}
+.if-row:last-child{border-bottom:none;}
+.if-row:hover{background:#161b22;}
 .fr-name{font-weight:500;color:#e6edf3;font-size:13px;}
 .fr-meta{font-size:11px;color:#8b949e;font-family:'IBM Plex Mono',monospace;}
 .bk-status{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500;}
@@ -1566,6 +1571,102 @@ function EditDeviceModal({device, onClose, onSaved}) {
 
 /* ───────────────────────── Config Archive (device tab) ─────────────── */
 // Open/recent alerts scoped to a single device, shown in its detail view.
+// Per-interface throughput/status/errors for a device, with a table overview
+// and click-through to an rx/tx chart. Data comes from stored MetricSamples.
+function fmtBps(bps){
+  const n = Number(bps) || 0;
+  if (n >= 1e9) return (n/1e9).toFixed(2)+" Gbps";
+  if (n >= 1e6) return (n/1e6).toFixed(2)+" Mbps";
+  if (n >= 1e3) return (n/1e3).toFixed(1)+" Kbps";
+  return Math.round(n)+" bps";
+}
+
+function DeviceInterfaces({device}) {
+  const [data, setData] = useState(null);     // {interfaces: {name: {rx:[{t,v}], tx:[{t,v}]}}}
+  const [range, setRange] = useState("6h");
+  const [sel, setSel] = useState(null);        // selected interface name for chart
+
+  function load(){
+    if (MOCK_MODE) { setData({interfaces:{}}); return; }
+    setData(null);
+    api.metricInterfaces(device.id, range).then(setData).catch(()=>setData({interfaces:{}}));
+  }
+  useEffect(()=>{ load(); }, [device.id, range]);
+
+  if (data===null) return <div className="cfg-loading"><span className="cfg-spin"/> Loading interface metrics…</div>;
+
+  const ifaces = data.interfaces || {};
+  const names = Object.keys(ifaces);
+  if (names.length===0) {
+    return <div className="cfg-empty" style={{margin:"8px 0"}}>No interface metrics collected yet for this device.{device.capability==="readonly"?" (Controller-managed devices report limited port data.)":" Throughput is sampled every 60s over SNMP — check back in a couple of minutes."}</div>;
+  }
+
+  // latest value per interface for the table
+  const rows = names.map(nm=>{
+    const rxs = ifaces[nm].rx||[], txs = ifaces[nm].tx||[];
+    const lastRx = rxs.length ? rxs[rxs.length-1].v : 0;
+    const lastTx = txs.length ? txs[txs.length-1].v : 0;
+    return { name:nm, rx:lastRx, tx:lastTx, total:lastRx+lastTx };
+  }).sort((a,b)=>b.total-a.total);
+
+  // detail chart for the selected interface
+  if (sel != null && ifaces[sel]) {
+    // scale bps -> Mbps so the chart axis/tooltip read cleanly
+    const rx = (ifaces[sel].rx||[]).map(p=>({t:p.t, v:+(p.v/1e6).toFixed(3)}));
+    const tx = (ifaces[sel].tx||[]).map(p=>({t:p.t, v:+(p.v/1e6).toFixed(3)}));
+    const peak = Math.max(0.01, ...rx.map(p=>p.v), ...tx.map(p=>p.v));
+    const lastRx = rx.length?rx[rx.length-1].v:0, lastTx = tx.length?tx[tx.length-1].v:0;
+    return (
+      <div className="dpane">
+        <div className="ed-back" onClick={()=>setSel(null)}>{IC.back} All interfaces</div>
+        <div style={{display:"flex",alignItems:"center",marginBottom:10}}>
+          <div style={{fontWeight:600,fontSize:15,fontFamily:"'IBM Plex Mono',monospace"}}>{sel}</div>
+          <div className="seg" style={{marginLeft:"auto"}}>
+            {["1h","6h","24h","7d"].map(r=>(
+              <button key={r} className={`seg-btn ${range===r?"on":""}`} onClick={()=>setRange(r)}>{r}</button>
+            ))}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:18,marginBottom:8,fontSize:12,alignItems:"center"}}>
+          <span style={{color:"#58a6ff"}}>● Rx (in) {lastRx.toFixed(2)} Mbps</span>
+          <span style={{color:"#3fb950"}}>● Tx (out) {lastTx.toFixed(2)} Mbps</span>
+          <span style={{color:"#8b949e",marginLeft:"auto"}}>peak {peak.toFixed(2)} Mbps</span>
+        </div>
+        <LineChart series={[{points:rx,color:"#58a6ff"},{points:tx,color:"#3fb950"}]}
+                   height={200} unit=" Mbps" max={peak*1.15}/>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dpane">
+      <div style={{display:"flex",alignItems:"center",marginBottom:10}}>
+        <div style={{fontSize:13,color:"#8b949e"}}>{rows.length} interface{rows.length===1?"":"s"} with traffic · click for history</div>
+        <div className="seg" style={{marginLeft:"auto"}}>
+          {["1h","6h","24h","7d"].map(r=>(
+            <button key={r} className={`seg-btn ${range===r?"on":""}`} onClick={()=>setRange(r)}>{r}</button>
+          ))}
+        </div>
+      </div>
+      <div className="if-tbl">
+        <div className="if-hdr">
+          <span style={{flex:1}}>Interface</span>
+          <span style={{width:110,textAlign:"right"}}>Rx</span>
+          <span style={{width:110,textAlign:"right"}}>Tx</span>
+        </div>
+        {rows.map(r=>(
+          <div key={r.name} className="if-row" onClick={()=>setSel(r.name)}>
+            <span style={{flex:1,fontFamily:"'IBM Plex Mono',monospace",fontSize:13}}>{r.name}</span>
+            <span style={{width:110,textAlign:"right",color:"#58a6ff",fontSize:13}}>{fmtBps(r.rx)}</span>
+            <span style={{width:110,textAlign:"right",color:"#3fb950",fontSize:13}}>{fmtBps(r.tx)}</span>
+            <span style={{width:20,textAlign:"right",color:"#6e7681"}}>›</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DeviceAlerts({device, auth}) {
   const [alerts, setAlerts] = useState(null);
   const [showResolved, setShowResolved] = useState(false);
@@ -2299,6 +2400,7 @@ function AppInner({auth, onLogout}) {
                 <div className="ptabs">
                   {fullId!=null && <div className="pback" title="Back to inventory" onClick={()=>{setFullId(null);}} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:4,fontSize:13,color:"#58a6ff",marginRight:12}}>‹ Back</div>}
                   <div className={`ptab ${tab==="detail"?"active":""}`} onClick={()=>{setTab("detail");}}>{selIface?"Interface":"Details"}</div>
+                  <div className={`ptab ${tab==="interfaces"?"active":""}`} onClick={()=>setTab("interfaces")}>Interfaces</div>
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="configs"?"active":""}`} onClick={()=>setTab("configs")}>Configs</div>}
                   <div className={`ptab ${tab==="alerts"?"active":""}`} onClick={()=>setTab("alerts")}>Alerts</div>
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="ssh"?"active":""}`} onClick={()=>setTab("ssh")}>Terminal</div>}
@@ -2406,6 +2508,8 @@ function AppInner({auth, onLogout}) {
                 )}
 
                 {tab==="alerts" && <DeviceAlerts key={sel.id} device={sel} auth={auth}/>}
+
+                {tab==="interfaces" && <DeviceInterfaces key={sel.id} device={sel}/>}
 
                 {tab==="ssh" && <SSHPane key={sel.id} device={sel} onUpdate={updateDevice}/>}
               </>}
