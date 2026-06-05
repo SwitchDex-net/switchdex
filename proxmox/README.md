@@ -13,8 +13,10 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/
 ```
 
 You'll be prompted for container ID, hostname, cores/RAM/disk, network bridge,
-and DHCP-vs-static. Defaults (2 cores / 4 GB / 40 GB disk) suit up to ~150
-devices. The script then:
+and DHCP-vs-static. The defaults (2 cores / 4 GB / 40 GB disk) are the **minimum
+spec** — fine for evaluation and small fleets (roughly up to ~50 devices). For
+larger fleets, size up per the table in [`docs/DEPLOY.md`](../docs/DEPLOY.md);
+RAM and disk scale with device and interface count. The script then:
 
 1. Downloads a Debian 12 LXC template if needed.
 2. Creates an **unprivileged** container with `nesting=1,keyctl=1` enabled

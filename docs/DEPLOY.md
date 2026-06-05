@@ -10,29 +10,46 @@ A single image file, one of:
 
 ## Requirements
 - A hypervisor (ESXi, Proxmox, VirtualBox, etc.)
-- 2 vCPU, 4 GB RAM, 40 GB disk (defaults; good for up to ~150 devices)
 - The VM must reach your **management network** — the subnet your switches,
   routers, and firewalls answer on (SSH/22, SNMP/161, NETCONF/830).
 
-### Sizing guidance
-| Fleet size | vCPU | RAM | Disk |
-|---|---|---|---|
-| Lab / eval (<25 devices) | 2 | 2 GB | 20 GB |
-| Small business (≤150) | 2 | 4 GB | 40 GB |
-| Mid-size (150–500) | 4 | 8 GB | 80 GB |
-| Large (500–2000) | 8 | 16 GB | 160 GB+ |
+### Minimum specs
+**2 vCPU · 4 GB RAM · 40 GB disk.** This is the floor — enough to run the full
+stack (backend, scheduler, Postgres, Caddy) and monitor a small fleet
+comfortably. It's the installer default and is fine for evaluation and for most
+small deployments (roughly up to ~50 devices, depending on how many interfaces
+each device exposes).
 
-The two things that use disk are Docker images / OS (a few GB, fixed) and the
-time-series metrics database. SwitchDex samples CPU, memory, uptime, **and
-per-interface throughput** every 60s, so metric volume scales with interface
-count, not just device count. A daily maintenance job downsamples raw samples to
-hourly after 7 days and prunes hourly data after 90 days (tunable via
-`METRICS_RAW_RETENTION_DAYS` / `METRICS_HOURLY_RETENTION_DAYS` in `.env`), which
-caps steady-state growth — but the raw window still means a busy switch with many
-active ports generates a meaningful number of rows. The disk figures above
-include headroom for this. Config history is text in git and compresses heavily
-(a few hundred MB/year even at 150 devices), so it's a minor contributor. For
-large fleets, raise `BACKUP_CONCURRENCY` in `.env` to speed the nightly backup.
+### Recommended specs by fleet size
+Pick based on the number of devices **and** their interface count — SwitchDex
+samples per-interface throughput every 60s, so a fleet of port-dense switches
+generates far more metric volume than the same number of APs or firewalls.
+
+| Fleet size | vCPU | RAM | Disk | Notes |
+|---|---|---|---|---|
+| Lab / eval (<25 devices) | 2 | 4 GB | 40 GB | Installer default; minimum spec |
+| Small (≤50 devices) | 2 | 4 GB | 40 GB | Comfortable at this size |
+| Small-medium (50–150) | 2–4 | 8 GB | 80 GB | Bump RAM as interface count grows |
+| Mid-size (150–500) | 4 | 16 GB | 160 GB | Postgres working set grows notably |
+| Large (500–2000) | 8 | 32 GB | 320 GB+ | Consider external/managed Postgres |
+
+Why RAM scales: the backend and the scheduler each run as their own process, and
+Postgres holds the active metrics working set. More devices — and especially more
+*interfaces* — mean more concurrent collection and a larger query set, which is
+what pushes memory rather than CPU (CPU stays bursty, not sustained).
+
+### What uses disk
+Two things: Docker images / OS (a few GB, fixed) and the time-series metrics
+database. Metric volume scales with **interface count**, not just device count,
+because per-interface throughput is sampled every 60s. A daily maintenance job
+downsamples raw samples to hourly after 7 days and prunes hourly data after 90
+days (tunable via `METRICS_RAW_RETENTION_DAYS` / `METRICS_HOURLY_RETENTION_DAYS`
+in `.env`), which caps steady-state growth — but the raw window still means a
+busy switch with many active ports generates a meaningful number of rows. The
+disk figures above include headroom for this. Config history is text in git and
+compresses heavily (a few hundred MB/year even at 150 devices), so it's a minor
+contributor. For large fleets, raise `BACKUP_CONCURRENCY` in `.env` to speed the
+nightly backup.
 
 ## Import & power on
 
