@@ -120,24 +120,25 @@ class UniFiConnector:
         return out
 
     def device_metrics(self, ext):
-        """Per-device metrics from the Omada Open API. The device list already
-        carries cpuUtil/memUtil/uptime, so reuse that endpoint rather than a
-        separate (UniFi-style) stat call."""
-        site_id = self._resolve_site_id()
-        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{site_id}/devices"
-        r = self._http.get(url, headers=self._hdr(),
-                           params={"page": 1, "pageSize": 100}, timeout=15)
+        """Per-device metrics from the UniFi controller (/stat/device)."""
+        r = self._sess.get(self._api("/stat/device"), timeout=15)
         r.raise_for_status()
-        body = r.json().get("result", [])
-        rows = body.get("data", body) if isinstance(body, dict) else body
-        for d in rows:
-            if d.get("mac") == ext:
+        for d in r.json().get("data", []):
+            if (d.get("_id") or d.get("mac")) == ext:
+                sysstats = d.get("sys_stats", {})
                 return {
-                    "cpu": float(d.get("cpuUtil", 0) or 0),
-                    "mem": float(d.get("memUtil", 0) or 0),
-                    "uptime": _omada_uptime_secs(d.get("uptime", 0)),
-                    "clients": d.get("clientNum", 0) or d.get("clientNumber", 0) or 0,
-                    "ports": [],
+                    "cpu": float(sysstats.get("cpu", 0) or 0),
+                    "mem": float(sysstats.get("mem", 0) or 0),
+                    "uptime": d.get("uptime", 0),
+                    "clients": d.get("num_sta", 0),
+                    "rx_bytes": d.get("rx_bytes", 0),
+                    "tx_bytes": d.get("tx_bytes", 0),
+                    "ports": [
+                        {"idx": p.get("port_idx"), "up": p.get("up"),
+                         "speed": p.get("speed"), "poe": p.get("poe_power"),
+                         "rx": p.get("rx_bytes"), "tx": p.get("tx_bytes")}
+                        for p in d.get("port_table", [])
+                    ],
                 }
         return {}
 
@@ -250,20 +251,27 @@ class OmadaConnector:
         return out
 
     def device_metrics(self, ext):
+        """Per-device metrics from the Omada Open API. The device list already
+        carries cpuUtil/memUtil/uptime (confirmed against the live controller),
+        and there is no working single-device GET at /devices/{mac}, so fetch
+        the list and filter by MAC."""
         site_id = self._resolve_site_id()
-        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{site_id}/devices/{ext}"
-        r = self._http.get(url, headers=self._hdr(), timeout=15)
+        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{site_id}/devices"
+        r = self._http.get(url, headers=self._hdr(),
+                           params={"page": 1, "pageSize": 100}, timeout=15)
         r.raise_for_status()
-        d = r.json().get("result", {})
-        return {
-            "cpu": float(d.get("cpuUtil", 0) or 0),
-            "mem": float(d.get("memUtil", 0) or 0),
-            "uptime": d.get("uptime", 0),
-            "clients": d.get("clientNum", 0),
-            "ports": [{"idx": p.get("port"), "up": p.get("linkStatus") == 1,
-                       "speed": p.get("linkSpeed"), "poe": p.get("poe")}
-                      for p in d.get("portStats", [])],
-        }
+        body = r.json().get("result", [])
+        rows = body.get("data", body) if isinstance(body, dict) else body
+        for d in rows:
+            if d.get("mac") == ext:
+                return {
+                    "cpu": float(d.get("cpuUtil", 0) or 0),
+                    "mem": float(d.get("memUtil", 0) or 0),
+                    "uptime": _omada_uptime_secs(d.get("uptime", 0)),
+                    "clients": d.get("clientNum", 0) or d.get("clientNumber", 0) or 0,
+                    "ports": [],
+                }
+        return {}
 
 
 def _omada_type(t):
