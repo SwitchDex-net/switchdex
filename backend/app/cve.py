@@ -19,7 +19,7 @@ import datetime as dt
 import requests
 from sqlalchemy import select, delete, func
 
-from .db import SessionLocal, Cve, DeviceCve, Device
+from .db import SessionLocal, Cve, DeviceCve, Device, Controller
 from .config import settings
 
 log = logging.getLogger("cve")
@@ -72,6 +72,20 @@ def derive_cpe(dev) -> str:
     v = (dev.vendor or "").lower()
     p = (dev.platform or "").lower()
     o = (dev.os or "").lower()
+    # TP-Link Omada APs: build a per-model firmware CPE, e.g.
+    # cpe:2.3:o:tp-link:eap610_firmware:1.2.0. NVD coverage is per-model and
+    # sparse, so models without records will honestly show "no coverage".
+    if "tp-link" in v or "omada" in v:
+        model = (dev.model or "").strip().lower()
+        if model:
+            # normalize: 'EAP610(US) v3.0' -> 'eap610'
+            import re
+            m = re.match(r"([a-z]+\d+[a-z]*)", model)
+            prod = (m.group(1) if m else model.split()[0]) + "_firmware"
+            ver = _version_from(dev) or "*"
+            return f"cpe:2.3:o:tp-link:{prod}:{ver}:*:*:*:*:*:*:*"
+        return ""
+
     for pred, (part, cpe_v, cpe_p) in _CPE_MAP:
         try:
             if pred(v, p, o):
@@ -353,6 +367,15 @@ async def scan_device(device_id: int) -> dict:
     # query NVD off-thread (it's blocking + slow)
     findings = await asyncio.to_thread(_query_nvd_cpe, cpe)
 
+    # If nothing matched, determine WHY: does NVD have any records for this
+    # product at all? If not, this is "no coverage" rather than "secure".
+    covered = True
+    if not findings:
+        parts2 = cpe.split(":")
+        prod_cpe = ":".join(parts2[:5] + ["*"] + parts2[6:]) if len(parts2) > 6 else cpe
+        any_for_product = await asyncio.to_thread(_query_nvd_cpe, prod_cpe, 1)
+        covered = len(any_for_product) > 0
+
     async with SessionLocal() as s:
         await s.execute(delete(DeviceCve).where(DeviceCve.device_id == device_id))
         by_sev = {}
@@ -370,19 +393,102 @@ async def scan_device(device_id: int) -> dict:
             else:
                 s.add(Cve(cve_id=f["cve_id"], description=f["description"][:4000],
                           cvss_score=f["cvss_score"], severity=sev, cpe_json="[]"))
+        dev = await s.get(Device, device_id)
+        if dev:
+            dev.cve_covered = covered
+            dev.cve_scanned_at = dt.datetime.utcnow()
         await s.commit()
 
-    return {"ok": True, "cpe": cpe, "matched": len(findings), "by_severity": by_sev}
+    return {"ok": True, "cpe": cpe, "matched": len(findings),
+            "by_severity": by_sev, "covered": covered}
 
 
 async def scan_fleet() -> dict:
     async with SessionLocal() as s:
         ids = (await s.execute(select(Device.id))).scalars().all()
+        ctrl_ids = (await s.execute(select(Controller.id))).scalars().all()
     total = 0
     for i in ids:
         r = await scan_device(i)
         total += r.get("matched", 0)
-    return {"devices": len(ids), "total_findings": total}
+    for c in ctrl_ids:
+        r = await scan_controller(c)
+        total += r.get("matched", 0)
+    return {"devices": len(ids), "controllers": len(ctrl_ids), "total_findings": total}
+
+
+def _controller_cpes(kind: str, version: str):
+    """Controller software CPEs. Omada CVEs appear under two product strings
+    (omada and omada_software_controller) — query both. UniFi controller is
+    'network_application' (formerly 'unifi_controller')."""
+    v = version or "*"
+    if kind == "omada":
+        return [f"cpe:2.3:a:tp-link:omada_software_controller:{v}:*:*:*:*:*:*:*",
+                f"cpe:2.3:a:tp-link:omada:{v}:*:*:*:*:*:*:*"]
+    if kind == "unifi":
+        return [f"cpe:2.3:a:ui:unifi_network_application:{v}:*:*:*:*:*:*:*",
+                f"cpe:2.3:a:ubiquiti:unifi_controller:{v}:*:*:*:*:*:*:*"]
+    return []
+
+
+async def scan_controller(controller_id: int) -> dict:
+    """Scan the controller *software* (Omada/UniFi) against NVD, querying the
+    relevant product CPEs and merging. Cached on the Controller row."""
+    import asyncio
+    async with SessionLocal() as s:
+        ctrl = await s.get(Controller, controller_id)
+        if not ctrl:
+            return {"ok": False, "error": "controller not found"}
+        kind, ver = ctrl.kind, ctrl.controller_version
+
+    cpes = _controller_cpes(kind, ver)
+    if not cpes:
+        return {"ok": True, "matched": 0, "note": "unknown controller kind"}
+    if not ver or ver == "*":
+        # without a version we'd over-match; record as not-precisely-scannable
+        async with SessionLocal() as s:
+            c = await s.get(Controller, controller_id)
+            if c:
+                c.cve_json = json.dumps({"matched": 0, "by_severity": {},
+                                         "covered": None, "note": "no controller version"})
+                c.cve_scanned_at = dt.datetime.utcnow()
+                await s.commit()
+        return {"ok": True, "matched": 0, "note": "no controller version captured"}
+
+    seen, findings = set(), []
+    for cpe in cpes:
+        for f in await asyncio.to_thread(_query_nvd_cpe, cpe):
+            if f["cve_id"] not in seen:
+                seen.add(f["cve_id"])
+                findings.append(f)
+
+    covered = True
+    if not findings:
+        any_hit = False
+        for cpe in cpes:
+            parts = cpe.split(":")
+            prod = ":".join(parts[:5] + ["*"] + parts[6:]) if len(parts) > 6 else cpe
+            if await asyncio.to_thread(_query_nvd_cpe, prod, 1):
+                any_hit = True
+                break
+        covered = any_hit
+
+    by_sev = {}
+    for f in findings:
+        by_sev[f["severity"] or ""] = by_sev.get(f["severity"] or "", 0) + 1
+    async with SessionLocal() as s:
+        c = await s.get(Controller, controller_id)
+        if c:
+            c.cve_json = json.dumps({
+                "matched": len(findings), "by_severity": by_sev, "covered": covered,
+                "findings": [{"cve_id": f["cve_id"], "severity": f["severity"],
+                              "cvss_score": f["cvss_score"], "description": f["description"][:600],
+                              "url": f"https://nvd.nist.gov/vuln/detail/{f['cve_id']}"}
+                             for f in findings],
+            })
+            c.cve_scanned_at = dt.datetime.utcnow()
+            await s.commit()
+    return {"ok": True, "matched": len(findings), "by_severity": by_sev, "covered": covered}
 
 
 async def fleet_summary() -> list:
@@ -403,6 +509,8 @@ async def fleet_summary() -> list:
                 "critical": counts.get("CRITICAL", 0), "high": counts.get("HIGH", 0),
                 "medium": counts.get("MEDIUM", 0), "low": counts.get("LOW", 0),
                 "total": sum(counts.values()),
+                "covered": d.cve_covered,           # True/False/None (None = not scanned)
+                "scanned_at": d.cve_scanned_at.isoformat() + "Z" if d.cve_scanned_at else None,
             })
     return out
 

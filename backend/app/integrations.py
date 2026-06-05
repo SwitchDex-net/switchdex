@@ -91,6 +91,7 @@ async def sync_one(cid: int) -> dict:
             return {"ok": False, "error": "controller not found"}
     try:
         devs = await connectors.sync_controller(ctrl)
+        ctrl_ver = await connectors.controller_version(ctrl)
     except Exception as e:  # noqa: BLE001
         async with SessionLocal() as s:
             c = await s.get(Controller, cid)
@@ -123,6 +124,8 @@ async def sync_one(cid: int) -> dict:
         ctrl = await s.get(Controller, cid)
         ctrl.last_status = "ok"; ctrl.last_poll = dt.datetime.utcnow()
         ctrl.device_count = len(seen)
+        if ctrl_ver:
+            ctrl.controller_version = ctrl_ver
         await s.commit()
     return {"ok": True, "synced": len(devs)}
 

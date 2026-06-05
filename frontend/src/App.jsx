@@ -93,6 +93,8 @@ const api = {
   baselineDrift: (id) => _req(`/compliance/devices/${id}/drift`),
   securitySummary: () => _req("/security/summary"),
   securityDevice: (id) => _req(`/security/devices/${id}`),
+  securityController: (id) => _req(`/security/controllers/${id}`),
+  securityScanController: (id) => _req(`/security/controllers/${id}/scan`, { method: "POST", timeoutMs: 120000 }),
   securityScan: () => _req("/security/scan", { method: "POST" }),
   securityScanDevice: (id) => _req(`/security/devices/${id}/scan`, { method: "POST" }),
   securitySync: (full=false) => _req(`/security/sync?full=${full}`, { method: "POST", timeoutMs: 600000 }),
@@ -2614,16 +2616,21 @@ function SecurityView({auth, devices, onOpenDevice}) {
   const isAdmin = auth.user.role === "admin";
   const [data, setData] = useState(null);       // summary {devices, cve_db, totals}
   const [sel, setSel] = useState(null);          // selected device id for detail
+  const [selCtrl, setSelCtrl] = useState(null);  // selected controller id for detail
   const [findings, setFindings] = useState(null);
   const [busy, setBusy] = useState("");          // "scan" | "sync" | ""
   const [msg, setMsg] = useState(null);
 
-  function load(){ api.securitySummary().then(setData).catch(()=>setData({devices:[],cve_db:{},totals:{}})); }
+  function load(){ api.securitySummary().then(setData).catch(()=>setData({devices:[],controllers:[],cve_db:{},totals:{}})); }
   useEffect(()=>{ if(!MOCK_MODE) load(); }, []);
 
   function openDevice(id){
-    setSel(id); setFindings(null);
+    setSel(id); setSelCtrl(null); setFindings(null);
     api.securityDevice(id).then(r=>setFindings(r.findings||[])).catch(()=>setFindings([]));
+  }
+  function openController(id){
+    setSelCtrl(id); setSel(null); setFindings(null);
+    api.securityController(id).then(r=>setFindings(r.findings||[])).catch(()=>setFindings([]));
   }
   function rescan(){
     setBusy("scan"); setMsg(null);
@@ -2642,6 +2649,36 @@ function SecurityView({auth, devices, onOpenDevice}) {
   const dbCount = data.cve_db?.count || 0;
 
   // ── device detail (CVE list) ──
+  if (selCtrl != null) {
+    const ctrl = (data.controllers||[]).find(c=>c.id===selCtrl) || {};
+    return (
+      <div className="fleet-wrap">
+        <div className="ed-back" onClick={()=>{setSelCtrl(null);setFindings(null);}}>{IC.back} Back to overview</div>
+        <div style={{marginBottom:14}}>
+          <div className="ed-title" style={{fontSize:16}}>{ctrl.name} — controller software vulnerabilities</div>
+          <div className="dsub" style={{fontSize:12}}>{ctrl.kind} controller{ctrl.version?` · v${ctrl.version}`:" · version unknown"}</div>
+        </div>
+        {findings===null ? <div className="cfg-loading"><span className="cfg-spin"/> Loading…</div>
+         : findings.length===0 ? <div className="cfg-empty">{ctrl.covered===false ? "NVD has no CVE records for this controller software, so it cannot be assessed through CVE matching. Check the vendor's security advisories directly." : ctrl.version ? "No known CVEs affect this controller software version." : "No controller software version was captured — re-sync the controller integration so its version can be read."}</div>
+         : (
+          <div className="fleet-tbl-card">
+            <div className="fleet-tbl-hdr"><span className="t">{findings.length} matched CVE{findings.length===1?"":"s"}</span><span style={{fontSize:11,color:"#8b949e"}}>controller software</span></div>
+            {findings.map(f=>(
+              <a key={f.cve_id} href={f.url} target="_blank" rel="noreferrer" className="fleet-row" style={{textDecoration:"none"}}>
+                <span style={{width:64,flexShrink:0,fontWeight:600,fontSize:11,color:SEV_COLOR[f.severity]||"#8b949e"}}>{f.severity||"—"}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div className="fr-name" style={{fontFamily:"'IBM Plex Mono',monospace"}}>{f.cve_id} <span style={{color:"#6e7681",fontWeight:400}}>CVSS {f.cvss_score||"—"}</span></div>
+                  <div className="fr-meta" style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.description||""}</div>
+                </div>
+                <span style={{color:"#58a6ff",fontSize:12,flexShrink:0}}>NVD ›</span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (sel != null) {
     const dev = (data.devices||[]).find(d=>d.id===sel) || {};
     return (
@@ -2652,7 +2689,7 @@ function SecurityView({auth, devices, onOpenDevice}) {
           <div className="dsub" style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:12}}>{dev.cpe || "no CPE mapping — device not scanned"}</div>
         </div>
         {findings===null ? <div className="cfg-loading"><span className="cfg-spin"/> Loading…</div>
-         : findings.length===0 ? <div className="cfg-empty">No known CVEs match the software version on this device. {dev.cpe?"":"(No CPE could be derived — vulnerability scanning needs a recognized vendor and version.)"}</div>
+         : findings.length===0 ? <div className="cfg-empty">{dev.covered===false ? "NVD has no CVE records filed for this product, so it cannot be assessed through CVE matching. (Vendors like OPNsense often publish advisories outside NVD — check the vendor's security page directly.)" : dev.cpe ? "No known CVEs affect this software version." : "(No CPE could be derived — vulnerability scanning needs a recognized vendor and version.)"}</div>
          : (
           <div className="fleet-tbl-card">
             <div className="fleet-tbl-hdr"><span className="t">{findings.length} matched CVE{findings.length===1?"":"s"}</span><span style={{fontSize:11,color:"#8b949e"}}>tight match · exact CPE + version range</span></div>
@@ -2705,16 +2742,39 @@ function SecurityView({auth, devices, onOpenDevice}) {
             <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
               {d.critical>0 && <span className="sev-pill" style={{background:"#f8514922",color:"#f85149"}}>{d.critical} crit</span>}
               {d.high>0 && <span className="sev-pill" style={{background:"#e3b34122",color:"#e3b341"}}>{d.high} high</span>}
-              {d.total===0 && d.cpe && <span style={{fontSize:12,color:"#3fb950"}}>clear</span>}
-              {!d.cpe && <span style={{fontSize:12,color:"#6e7681"}}>—</span>}
+              {d.total===0 && d.covered===true && <span style={{fontSize:12,color:"#3fb950"}}>clear</span>}
+              {d.total===0 && d.covered===false && <span style={{fontSize:12,color:"#8b949e"}} title="NVD has no CVE records for this product, so it cannot be assessed this way">no NVD coverage</span>}
+              {d.total===0 && (d.covered===null||d.covered===undefined) && !d.cpe && <span style={{fontSize:12,color:"#6e7681"}}>—</span>}
+              {d.total===0 && (d.covered===null||d.covered===undefined) && d.cpe && <span style={{fontSize:12,color:"#6e7681"}}>not scanned</span>}
             </div>
           </div>
         ))}
       </div>
+
+      {(data.controllers||[]).length>0 && (
+        <div className="fleet-tbl-card" style={{marginTop:14}}>
+          <div className="fleet-tbl-hdr"><span className="t">Controller software</span><span style={{fontSize:11,color:"#8b949e"}}>Omada / UniFi management software</span></div>
+          {data.controllers.map(c=>(
+            <div key={c.id} className="fleet-row" onClick={()=>openController(c.id)}>
+              <div style={{width:28,height:28,borderRadius:6,background:"#2e1a3e",color:"#bc8cff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{IC.plug}</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div className="fr-name">{c.name}</div>
+                <div className="fr-meta">{c.kind} controller{c.version?` · v${c.version}`:" · version unknown"}</div>
+              </div>
+              <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
+                {c.critical>0 && <span className="sev-pill" style={{background:"#f8514922",color:"#f85149"}}>{c.critical} crit</span>}
+                {c.high>0 && <span className="sev-pill" style={{background:"#e3b34122",color:"#e3b341"}}>{c.high} high</span>}
+                {c.total===0 && c.covered===true && <span style={{fontSize:12,color:"#3fb950"}}>clear</span>}
+                {c.total===0 && c.covered===false && <span style={{fontSize:12,color:"#8b949e"}} title="NVD has no CVE records for this product">no NVD coverage</span>}
+                {c.total===0 && (c.covered===null||c.covered===undefined) && <span style={{fontSize:12,color:"#6e7681"}}>{c.version?"not scanned":"no version"}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
-
 
 function ComplianceView({auth, devices}) {
   const [tab, setTab] = useState("dashboard");   // dashboard | policies

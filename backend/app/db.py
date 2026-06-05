@@ -56,6 +56,11 @@ class Device(Base):
     # CPE for vulnerability matching (auto-derived from vendor/platform/version,
     # user-overridable when our mapping is wrong). Empty = not yet resolved.
     cpe: Mapped[str] = mapped_column(String(256), default="")
+    # vulnerability-scan state: covered=True means NVD has records for this
+    # product (so 0 findings = genuinely clear); False means NVD has no records
+    # for the product at all (0 = "no coverage", not "secure"). None = not scanned.
+    cve_covered: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    cve_scanned_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     versions: Mapped[list["ConfigVersion"]] = relationship(
@@ -138,6 +143,9 @@ class Controller(Base):
     last_poll: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     last_status: Mapped[str] = mapped_column(String(32), default="never")    # ok | error: ...
     device_count: Mapped[int] = mapped_column(Integer, default=0)
+    controller_version: Mapped[str] = mapped_column(String(64), default="")  # controller SW version, for CVE scan
+    cve_json: Mapped[str] = mapped_column(Text, default="")   # cached CVE scan result for the controller software
+    cve_scanned_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 

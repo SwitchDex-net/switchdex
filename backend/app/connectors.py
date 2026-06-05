@@ -41,6 +41,22 @@ async def sync_controller(ctrl) -> list[dict]:
     return await asyncio.to_thread(c.list_devices)
 
 
+async def controller_version(ctrl) -> str:
+    """Best-effort fetch of the controller's own software version (for CVE
+    scanning). Returns '' if unavailable — never fatal to a poll."""
+    if settings.device_backend == "sim":
+        return "5.13.30" if ctrl.kind == "omada" else "8.0.28"
+    try:
+        c = _make(ctrl)
+        await asyncio.to_thread(c.login)
+        fn = getattr(c, "get_controller_version", None)
+        if fn:
+            return await asyncio.to_thread(fn) or ""
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 async def fetch_metrics(ctrl, external_id: str) -> dict:
     if settings.device_backend == "sim":
         return _sim_metrics(external_id)
@@ -155,6 +171,18 @@ class OmadaConnector:
 
     def _hdr(self):
         return {"Authorization": f"AccessToken={self._token}"}
+
+    def get_controller_version(self):
+        """Omada controller software version via the Open API info endpoint."""
+        try:
+            r = self._http.get(f"{self.ctrl.base_url}/openapi/v1/{self._cid}/info",
+                               headers=self._hdr(), timeout=10)
+            if r.status_code == 200:
+                res = r.json().get("result", {})
+                return res.get("controllerVer") or res.get("version") or ""
+        except Exception:  # noqa: BLE001
+            pass
+        return ""
 
     def _resolve_site_id(self):
         """Omada's device endpoints want the opaque siteId, not the site name.
