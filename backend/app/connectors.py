@@ -65,6 +65,26 @@ async def fetch_metrics(ctrl, external_id: str) -> dict:
     return await asyncio.to_thread(c.device_metrics, external_id)
 
 
+async def list_clients(ctrl) -> list[dict]:
+    """Return clients connected through this controller, in a vendor-neutral
+    shape so the UI and any aggregation work regardless of Omada/UniFi.
+
+    Normalized client dict keys:
+        mac, name, ip, ap_name, ap_mac, ssid, band ("2.4"/"5"/"6"/""),
+        channel, rssi, signal (0-100), rx_rate_bps, tx_rate_bps   (negotiated
+        PHY link rates), traffic_down, traffic_up (cumulative bytes),
+        uptime_secs, device_type, guest (bool), source ("omada"/"unifi").
+    Connectors implement list_clients(); missing impl -> []."""
+    if settings.device_backend == "sim":
+        return _sim_clients(ctrl)
+    c = _make(ctrl)
+    await asyncio.to_thread(c.login)
+    fn = getattr(c, "list_clients", None)
+    if not fn:
+        return []
+    return await asyncio.to_thread(fn)
+
+
 def _make(ctrl):
     return UniFiConnector(ctrl) if ctrl.kind == "unifi" else OmadaConnector(ctrl)
 
@@ -141,6 +161,40 @@ class UniFiConnector:
                     ],
                 }
         return {}
+
+    def list_clients(self):
+        """UniFi clients via /stat/sta, mapped to the vendor-neutral shape."""
+        try:
+            r = self._sess.get(self._api("/stat/sta"), timeout=15)
+            r.raise_for_status()
+        except Exception:  # noqa: BLE001
+            return []
+        out = []
+        for d in r.json().get("data", []):
+            radio = d.get("radio", "")  # ng=2.4, na/ac=5, 6e=6
+            band = {"ng": "2.4", "na": "5", "ac": "5", "6e": "6"}.get(radio, "")
+            out.append({
+                "mac": d.get("mac", ""),
+                "name": d.get("name") or d.get("hostname") or d.get("mac", ""),
+                "ip": d.get("ip", ""),
+                "ap_name": d.get("ap_displayName", "") or d.get("ap_mac", ""),
+                "ap_mac": d.get("ap_mac", ""),
+                "ssid": d.get("essid", ""),
+                "band": band,
+                "channel": d.get("channel", 0),
+                "rssi": (d.get("rssi", 0) - 96) if d.get("rssi", 0) else 0,
+                "signal": d.get("signal", 0),
+                "rx_rate_bps": int(d.get("rx_rate", 0) or 0) * 1000,
+                "tx_rate_bps": int(d.get("tx_rate", 0) or 0) * 1000,
+                "traffic_down": int(d.get("rx_bytes", 0) or 0),
+                "traffic_up": int(d.get("tx_bytes", 0) or 0),
+                "uptime_secs": int(d.get("uptime", 0) or 0),
+                "device_type": "",
+                "wireless": not d.get("is_wired", False),
+                "guest": bool(d.get("is_guest")),
+                "source": "unifi",
+            })
+        return out
 
 
 def _unifi_type(t):
@@ -273,6 +327,54 @@ class OmadaConnector:
                 }
         return {}
 
+    def list_clients(self):
+        """All clients connected through the Omada controller, normalized.
+        Paginates the /clients endpoint."""
+        site_id = self._resolve_site_id()
+        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{site_id}/clients"
+        out, page = [], 1
+        while True:
+            r = self._http.get(url, headers=self._hdr(),
+                               params={"page": page, "pageSize": 100}, timeout=15)
+            if r.status_code != 200:
+                break
+            body = r.json().get("result", {})
+            rows = body.get("data", []) if isinstance(body, dict) else body
+            total = body.get("totalRows") if isinstance(body, dict) else None
+            for d in rows:
+                # radioId 0=2.4GHz, 1=5GHz, 2=6GHz on Omada APs (wired clients omit it)
+                band = {0: "2.4", 1: "5", 2: "6"}.get(d.get("radioId")) if d.get("wireless") else ""
+                out.append({
+                    "mac": d.get("mac", ""),
+                    "name": d.get("name") or d.get("hostName") or d.get("mac", ""),
+                    "ip": d.get("ip", ""),
+                    "ap_name": d.get("apName", ""),
+                    "ap_mac": d.get("apMac", ""),
+                    "ssid": d.get("ssid", ""),
+                    "band": band or "",
+                    "channel": d.get("channel", 0),
+                    "rssi": d.get("rssi", 0),
+                    "signal": d.get("signalLevel", 0),
+                    "rx_rate_bps": int(d.get("rxRate", 0) or 0) * 1000,   # Omada reports Kbps
+                    "tx_rate_bps": int(d.get("txRate", 0) or 0) * 1000,
+                    "traffic_down": int(d.get("trafficDown", 0) or 0),    # cumulative bytes
+                    "traffic_up": int(d.get("trafficUp", 0) or 0),
+                    "uptime_secs": int(d.get("uptime", 0) or 0),
+                    "device_type": d.get("deviceType", "") or "",
+                    "wireless": bool(d.get("wireless")),
+                    "guest": bool(d.get("guest")),
+                    "source": "omada",
+                })
+            # stop when we've collected everything or the page came back short
+            if total is not None and len(out) >= total:
+                break
+            if len(rows) < 100:
+                break
+            page += 1
+            if page > 20:   # safety cap
+                break
+        return out
+
 
 def _omada_type(t):
     return {"switch": "switch", "gateway": "router", "ap": "ap"}.get(str(t).lower(), "switch")
@@ -328,3 +430,31 @@ def _sim_metrics(ext):
             "uptime": random.randint(100000, 9000000), "clients": random.randint(0, 48),
             "ports": [{"idx": i, "up": i <= 3, "speed": 1000 if i <= 3 else 0, "poe": 7.4 if i == 1 else 0}
                       for i in range(1, 9)]}
+
+
+def _sim_clients(ctrl):
+    """Believable simulated clients across a couple of APs for demo mode."""
+    import random
+    aps = [("Sim-AP-01", "aa:bb:cc:00:00:01"), ("Sim-AP-02", "aa:bb:cc:00:00:02")]
+    names = ["iPhone-Kara", "MacBook-Pro", "Pixel-8", "LivingRoom-TV", "Nest-Hub",
+             "Office-Laptop", "Ring-Doorbell", "PS5", "Echo-Dot", "Thermostat"]
+    ssids = ["HomeNet", "HomeNet", "IoT"]
+    out = []
+    for i, nm in enumerate(names):
+        ap = aps[i % len(aps)]
+        band = random.choice(["2.4", "5", "5", "6"])
+        out.append({
+            "mac": f"de:ad:be:ef:{i:02x}:{random.randint(0,255):02x}",
+            "name": nm, "ip": f"10.0.20.{20+i}",
+            "ap_name": ap[0], "ap_mac": ap[1], "ssid": random.choice(ssids),
+            "band": band, "channel": random.choice([1, 6, 11, 36, 44, 149]),
+            "rssi": -random.randint(38, 72), "signal": random.randint(55, 99),
+            "rx_rate_bps": random.randint(50, 800) * 1_000_000,
+            "tx_rate_bps": random.randint(50, 800) * 1_000_000,
+            "traffic_down": random.randint(1, 9000) * 1_000_000,
+            "traffic_up": random.randint(1, 3000) * 1_000_000,
+            "uptime_secs": random.randint(300, 400000),
+            "device_type": random.choice(["phone", "laptop", "iot", "tv"]),
+            "wireless": True, "guest": False, "source": "sim",
+        })
+    return out
