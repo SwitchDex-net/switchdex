@@ -120,8 +120,19 @@ async def main():
     sched.add_job(sample_controller_metrics, "interval", seconds=60)
     # evaluate alert rules every 60 seconds
     sched.add_job(alert_engine.evaluate, "interval", seconds=60)
-    # sample open-protocol (SNMP) device telemetry on the configured interval
-    sched.add_job(tel.collect_once, "interval", seconds=settings.metrics_interval)
+    async def sample_open_metrics():
+        try:
+            n = await tel.collect_once(scope="open")
+            log.info("open-device telemetry sampled (%d rows)", n)
+        except Exception as e:  # noqa: BLE001
+            log.error("open telemetry sample failed: %s", e)
+    # sample open-protocol (SNMP) device telemetry. The interface-counter walk
+    # makes this heavier than a 30s slot can reliably hold, so give it room:
+    # coalesce missed runs, allow a couple of overlapping instances, and a grace
+    # window — otherwise APScheduler silently skips runs ("max instances reached").
+    sched.add_job(sample_open_metrics, "interval",
+                  seconds=max(60, settings.metrics_interval),
+                  max_instances=2, coalesce=True, misfire_grace_time=30)
 
     sched.add_job(discover_neighbors, "interval", minutes=15)
     # daily telemetry maintenance: downsample raw -> hourly, prune old data
