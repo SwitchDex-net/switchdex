@@ -4032,22 +4032,18 @@ function ChannelEditor({chan, onSave, onClose}) {
 }
 
 function AlertsView({auth, onOpenDevice, devices=[]}) {
-  const [tab, setTab] = useState("active");      // active | history | rules | channels
+  const [tab, setTab] = useState("active");      // active | history | rules
   const [alerts, setAlerts] = useState(SEED_ALERTS);
   const [rules, setRules] = useState(SEED_RULES);
-  const [channels, setChannels] = useState(SEED_CHANNELS);
   const [editRule, setEditRule] = useState(null);     // rule object or {} for new
-  const [editChan, setEditChan] = useState(null);     // channel object or {} for new
   const isAdmin = auth.user.role === "admin";
 
   function reloadRules(){ api.listRules().then(setRules).catch(()=>{}); }
-  function reloadChannels(){ api.listChannels().then(setChannels).catch(()=>{}); }
 
   useEffect(()=>{
     if (MOCK_MODE) return;
     api.listAlerts().then(setAlerts).catch(()=>{});
     reloadRules();
-    reloadChannels();
   }, []);
 
   function ack(id){
@@ -4068,13 +4064,6 @@ function AlertsView({auth, onOpenDevice, devices=[]}) {
   }
   function delRule(id){ if(confirm("Delete this rule?")) api.deleteRule(id).then(reloadRules).catch(()=>{}); }
   function toggleRule(r){ api.updateRule(r.id, {...r, enabled:!r.enabled}).then(reloadRules).catch(()=>{}); }
-  function saveChan(c){
-    const body = { name:c.name, kind:c.kind||"webhook", enabled:c.enabled!==false,
-      config:c.config||{}, min_severity:c.min_severity||"warning" };
-    const p = c.id ? api.updateChannel(c.id, body) : api.addChannel(body);
-    p.then(()=>{ setEditChan(null); reloadChannels(); }).catch(e=>alert("Save failed: "+e.message));
-  }
-  function delChan(id){ if(confirm("Delete this channel?")) api.deleteChannel(id).then(reloadChannels).catch(()=>{}); }
 
   const active = alerts.filter(a=>a.state!=="resolved");
   const resolved = alerts.filter(a=>a.state==="resolved");
@@ -4111,7 +4100,7 @@ function AlertsView({auth, onOpenDevice, devices=[]}) {
   return (
     <div className="alerts-wrap">
       <div className="al-tabs">
-        {[["active","Active"],["history","History"],["rules","Rules"],["channels","Channels"]].map(([k,l])=>(
+        {[["active","Active"],["history","History"],["rules","Rules"]].map(([k,l])=>(
           <button key={k} className={`fbtn ${tab===k?"on":""}`} onClick={()=>setTab(k)}>{l}</button>
         ))}
       </div>
@@ -4163,26 +4152,7 @@ function AlertsView({auth, onOpenDevice, devices=[]}) {
         </div>
       )}
 
-      {tab==="channels" && (
-        <div className="al-card">
-          {channels.map(c=>(
-            <div className="al-row" key={c.id}>
-              <span className="chan-kind">{c.kind}</span>
-              <div className="al-body" style={{cursor:isAdmin?"pointer":"default"}} onClick={()=>isAdmin&&setEditChan(c)}>
-                <div className="al-title">{c.name}</div>
-                <div className="al-detail">{c.config?.to||c.config?.url||c.config?.host||"configured"} · ≥ {c.min_severity}</div>
-              </div>
-              <span className={`al-state ${c.enabled?"resolved":""}`} style={{background:c.enabled?undefined:"#21262d",color:c.enabled?undefined:"#8b949e"}}>{c.enabled?"enabled":"off"}</span>
-              {isAdmin && <button className="al-btn" onClick={()=>setEditChan(c)} title="Edit">{IC.edit}</button>}
-              {isAdmin && <button className="al-btn resolve" onClick={()=>delChan(c.id)} title="Delete" style={{color:"#f85149"}}>{IC.x}</button>}
-            </div>
-          ))}
-          {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}} onClick={()=>setEditChan({kind:"webhook",min_severity:"warning",enabled:true,config:{}})}>{IC.plus} Add channel (email · webhook · syslog · Discord)</button></div>}
-        </div>
-      )}
-
       {editRule && <RuleEditor rule={editRule} devices={devices} onSave={saveRule} onClose={()=>setEditRule(null)}/>}
-      {editChan && <ChannelEditor chan={editChan} onSave={saveChan} onClose={()=>setEditChan(null)}/>}
     </div>
   );
 }
@@ -4535,6 +4505,17 @@ function SettingsView({auth}) {
     }).catch(e=>setNvdMsg("Save failed: "+e.message)).finally(()=>setNvdSaving(false));
   }
   const isAdmin = auth.user.role === "admin";
+  // notification channels (shared by alerting + automation)
+  const [channels, setChannels] = useState(SEED_CHANNELS);
+  const [editChan, setEditChan] = useState(null);
+  function reloadChannels(){ if(!MOCK_MODE) api.listChannels().then(setChannels).catch(()=>{}); }
+  useEffect(()=>{ reloadChannels(); }, []);
+  function saveChan(c){
+    const body = {name:c.name, kind:c.kind, min_severity:c.min_severity, enabled:c.enabled, config:c.config||{}};
+    const p = c.id ? api.updateChannel(c.id, body) : api.addChannel(body);
+    p.then(()=>{ setEditChan(null); reloadChannels(); }).catch(e=>alert("Save failed: "+e.message));
+  }
+  function delChan(id){ if(confirm("Delete this channel?")) api.deleteChannel(id).then(reloadChannels).catch(()=>{}); }
 
   function addUser() {
     if (!newUser.username) return;
@@ -4564,6 +4545,7 @@ function SettingsView({auth}) {
       <div style={{display:"flex",gap:8,marginBottom:18}}>
         <button className={`fbtn ${tab==="users"?"on":""}`} onClick={()=>setTab("users")}>Local users</button>
         <button className={`fbtn ${tab==="ldap"?"on":""}`} onClick={()=>setTab("ldap")}>LDAP / Active Directory</button>
+        <button className={`fbtn ${tab==="notifications"?"on":""}`} onClick={()=>setTab("notifications")}>Notifications</button>
         <button className={`fbtn ${tab==="integrations"?"on":""}`} onClick={()=>setTab("integrations")}>API keys</button>
       </div>
 
@@ -4667,6 +4649,31 @@ function SettingsView({auth}) {
           <div className="set-desc" style={{marginTop:10,fontSize:12,color:"#6e7681"}}>The key is write-only here — it's never displayed back in full. A key set via <code>.env</code> still works; a key saved here takes precedence.</div>
         </div>
       </>}
+
+      {tab==="notifications" && <>
+        <div className="set-section">
+          <div className="set-h">Notification channels</div>
+          <div className="set-desc">Where SwitchDex sends notifications. These channels are shared — both alert rules and automations deliver through them. A channel only receives events at or above its minimum severity.</div>
+          <div className="al-card" style={{marginTop:12}}>
+            {channels.map(c=>(
+              <div className="al-row" key={c.id}>
+                <span className="chan-kind">{c.kind}</span>
+                <div className="al-body" style={{cursor:isAdmin?"pointer":"default"}} onClick={()=>isAdmin&&setEditChan(c)}>
+                  <div className="al-title">{c.name}</div>
+                  <div className="al-detail">{c.config?.to||c.config?.url||c.config?.host||"configured"} · ≥ {c.min_severity}</div>
+                </div>
+                <span className={`al-state ${c.enabled?"resolved":""}`} style={{background:c.enabled?undefined:"#21262d",color:c.enabled?undefined:"#8b949e"}}>{c.enabled?"enabled":"off"}</span>
+                {isAdmin && <button className="al-btn" onClick={()=>setEditChan(c)} title="Edit">{IC.edit}</button>}
+                {isAdmin && <button className="al-btn resolve" onClick={()=>delChan(c.id)} title="Delete" style={{color:"#f85149"}}>{IC.x}</button>}
+              </div>
+            ))}
+            {channels.length===0 && <div className="al-row"><span style={{color:"#8b949e",fontSize:13}}>No channels configured yet.</span></div>}
+            {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}} onClick={()=>setEditChan({kind:"webhook",min_severity:"warning",enabled:true,config:{}})}>{IC.plus} Add channel (email · webhook · syslog · Discord)</button></div>}
+          </div>
+        </div>
+      </>}
+
+      {editChan && <ChannelEditor chan={editChan} onSave={saveChan} onClose={()=>setEditChan(null)}/>}
     </div>
   );
 }

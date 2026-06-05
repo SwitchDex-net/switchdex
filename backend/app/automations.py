@@ -178,9 +178,15 @@ async def _to_thread_apply(dev, ifname):
 
 
 # ───────────────────────── the core: fire an automation ────────────────
-async def fire(auto, trigger_summary, session):
+async def fire(auto, trigger_summary, session, trigger_device_id=None):
     """Run one automation now, honoring all guardrails. Writes an AutomationRun
-    and returns it. `auto` and `session` are live within the caller's session."""
+    and returns it. `auto` and `session` are live within the caller's session.
+
+    If `trigger_device_id` is given (event-driven automation fired by something
+    that happened on a specific device), the action targets ONLY that device —
+    with the automation's scope acting as a filter (e.g. scope=switches means the
+    automation simply won't fire for a non-switch). Scheduled automations pass
+    no trigger device and act across the full scope."""
     now = dt.datetime.utcnow()
 
     # cooldown gate
@@ -190,9 +196,23 @@ async def fire(auto, trigger_summary, session):
         session.add(run); await session.commit()
         return run
 
-    devices = await _resolve_scope(auto, session)
-    capped = devices[: max(1, auto.max_devices_per_run or 1)]
-    blast_note = "" if len(capped) == len(devices) else f" (capped {len(devices)}→{len(capped)} by blast radius)"
+    scoped = await _resolve_scope(auto, session)
+
+    if trigger_device_id is not None:
+        # event on a specific device: act only on it, and only if it's in scope
+        target = next((d for d in scoped if d.id == trigger_device_id), None)
+        if target is None:
+            run = AutomationRun(automation_id=auto.id, ts=now, trigger_summary=trigger_summary,
+                                status="skipped",
+                                detail="triggering device is outside this automation's scope")
+            session.add(run); await session.commit()
+            return run
+        capped = [target]
+        blast_note = ""
+    else:
+        capped = scoped[: max(1, auto.max_devices_per_run or 1)]
+        blast_note = "" if len(capped) == len(scoped) else f" (capped {len(scoped)}→{len(capped)} by blast radius)"
+
     device_ids = [d.id for d in capped]
 
     is_remed = auto.action_type in REMEDIATION_ACTIONS
@@ -264,7 +284,7 @@ async def on_event(event, context):
             summary = _event_summary(event, context)
             # detach: fire uses the same session
             auto2 = await s.get(Automation, auto.id)
-            await fire(auto2, summary, s)
+            await fire(auto2, summary, s, trigger_device_id=context.get("device_id"))
 
 
 def _event_matches(event, tj, context):
