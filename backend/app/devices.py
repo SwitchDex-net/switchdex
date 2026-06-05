@@ -916,6 +916,16 @@ def _snmp_sysdescr(ip, community, version="2c"):
 
 def _classify(sysdescr, ip):
     s = sysdescr.lower()
+    # Firewall platforms first — OPNsense/pfSense often report only a generic
+    # FreeBSD sysDescr over SNMP, so "freebsd" alone implies a BSD firewall here.
+    # These are device_type "firewall", unlike the switch table below.
+    if "opnsense" in s:
+        return {"vendor": "OPNsense", "platform": "linux", "model": "", "os": sysdescr[:120],
+                "device_type": "firewall", "reachable": True, "sysdescr": sysdescr}
+    if "pfsense" in s or "freebsd" in s:
+        vendor = "pfSense" if "pfsense" in s else "OPNsense/pfSense"
+        return {"vendor": vendor, "platform": "linux", "model": "", "os": sysdescr[:120],
+                "device_type": "firewall", "reachable": True, "sysdescr": sysdescr}
     # IOS-XE identifies itself either as "ios-xe" or by a release-train name
     # (Gibraltar/Fuji/Everest/Amsterdam/Bengaluru/Dublin/Cupertino...) in the
     # IOS sysDescr. Distinguishing it matters for CPE (cisco:ios_xe vs cisco:ios).
@@ -928,7 +938,6 @@ def _classify(sysdescr, ip):
         ("juniper", ("Juniper", "junos")), ("sonic", ("SONiC", "sonic")),
         ("brocade", ("Brocade", "brocade")), ("foundry", ("Brocade", "brocade")),
         ("ruckus", ("Brocade", "brocade")), ("ironware", ("Brocade", "brocade")),
-        ("freebsd", ("pfSense", "linux")),
     ]
     for key, (vendor, platform) in table:
         if key in s:
