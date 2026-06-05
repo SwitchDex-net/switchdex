@@ -3245,16 +3245,26 @@ function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
           <option value="type">Device type</option>
           <option value="role">Device role</option>
         </select>
-        {a.scope_type==="type" && (
+        {a.scope_type==="type" && (<>
           <select className="set-input" style={{marginTop:8}} value={a.scope.value||"switch"} onChange={e=>set("scope",{value:e.target.value})}>
             <option value="switch">Switches</option><option value="firewall">Firewalls</option><option value="ap">Access points</option><option value="router">Routers</option>
           </select>
-        )}
-        {a.scope_type==="role" && (
+          <label className="auto-lbl">Specific device (optional)</label>
+          <select className="set-input" value={a.scope.device_id||""} onChange={e=>set("scope",{...a.scope, device_id:e.target.value?Number(e.target.value):null})}>
+            <option value="">Any device of this type</option>
+            {devices.filter(d=>d.type===(a.scope.value||"switch")).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </>)}
+        {a.scope_type==="role" && (<>
           <select className="set-input" style={{marginTop:8}} value={a.scope.value||"access"} onChange={e=>set("scope",{value:e.target.value})}>
             <option value="access">Access</option><option value="distribution">Distribution</option><option value="core">Core</option><option value="edge">Edge</option>
           </select>
-        )}
+          <label className="auto-lbl">Specific device (optional)</label>
+          <select className="set-input" value={a.scope.device_id||""} onChange={e=>set("scope",{...a.scope, device_id:e.target.value?Number(e.target.value):null})}>
+            <option value="">Any device with this role</option>
+            {devices.filter(d=>d.role===(a.scope.value||"access")).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </>)}
       </div>
 
       <div className="set-section">

@@ -51,13 +51,19 @@ async def _resolve_scope(auto, session):
     except Exception:  # noqa: BLE001
         sc = {}
     if st == "type":
-        return [d for d in devices if d.device_type == sc.get("value")]
-    if st == "role":
-        return [d for d in devices if d.role == sc.get("value")]
-    if st == "ids":
+        sel = [d for d in devices if d.device_type == sc.get("value")]
+    elif st == "role":
+        sel = [d for d in devices if d.role == sc.get("value")]
+    elif st == "ids":
         ids = set(sc.get("ids", []))
         return [d for d in devices if d.id in ids]
-    return devices
+    else:
+        return devices
+    # optional narrowing to a single device within the chosen type/role
+    did = sc.get("device_id")
+    if did:
+        sel = [d for d in sel if d.id == did]
+    return sel
 
 
 # ───────────────────────── guardrail helpers ───────────────────────────

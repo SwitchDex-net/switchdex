@@ -68,6 +68,7 @@ def _dev_out(d: Device, controller_url: str = "") -> dict:
     return {
         "id": d.id, "name": d.name, "hostname": d.hostname, "ip": d.ip,
         "vendor": d.vendor, "model": d.model, "os": d.os, "type": d.device_type,
+        "role": d.role,
         "platform": d.platform, "protocol": d.protocol, "location": d.location,
         "status": d.status, "sshPort": d.ssh_port,
         "source": d.source, "capability": d.capability,
