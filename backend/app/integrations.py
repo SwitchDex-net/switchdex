@@ -155,7 +155,8 @@ async def clients(_: dict = Depends(get_current_user)):
             cl = await connectors.list_clients(ctrl)
             for c in cl:
                 c["controller"] = ctrl.name
-            out.extend(cl)
+            # this view is "Wireless Clients" — exclude wired clients
+            out.extend([c for c in cl if c.get("wireless", True)])
         except Exception as e:  # noqa: BLE001
             # one bad controller shouldn't blank the whole view
             continue

@@ -970,6 +970,7 @@ const SBIcon = ({n}) => {
     shield:<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
     plug:<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M15 3l6 6-3 3-6-6 3-3zM9 21l-6-6 3-3 6 6-3 3z"/></svg>,
     settings:<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
+    wifi:<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12.55a11 11 0 0114 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>,
   };
   return m[n]||null;
 };
@@ -995,6 +996,22 @@ function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs, onOpe
       .catch(() => { if (alive) setBackups([]); });
     return () => { alive = false; };
   }, [d.id]);
+
+  // real connected-client count for APs (the controller device_metrics field is
+  // unreliable, so count from the live client list matched on this AP's name/mac)
+  const [apClients, setApClients] = useState(null);
+  useEffect(() => {
+    if (MOCK_MODE || d.type !== "ap") { setApClients(null); return; }
+    let alive = true;
+    api.fleetClients()
+      .then(r => { if (alive) {
+        const list = r.clients || [];
+        setApClients(list.filter(c => c.ap_name === d.name || c.ap_mac === d.external_id).length);
+      }})
+      .catch(() => { if (alive) setApClients(null); });
+    return () => { alive = false; };
+  }, [d.id]);
+
   return (
     <>
       {/* click-away scrim — transparent so the page stays visible behind it */}
@@ -1024,8 +1041,8 @@ function QuickView({device:d, metrics, onClose, onOpenFull, onOpenConfigs, onOpe
 
           {d.type==="ap" && onOpenClients && (
             <div className="qv-clients" onClick={()=>onOpenClients(d.name)} title="View connected clients">
-              <span style={{display:"flex",alignItems:"center",gap:8}}>{IC.user} Connected clients</span>
-              <span style={{display:"flex",alignItems:"center",gap:6,color:"#58a6ff"}}>{m.clients!=null?m.clients:"view"} ›</span>
+              <span style={{display:"flex",alignItems:"center",gap:8}}>{IC.link} Connected clients</span>
+              <span style={{display:"flex",alignItems:"center",gap:6,color:"#58a6ff"}}>{apClients!=null?apClients:"…"} ›</span>
             </div>
           )}
 
@@ -2400,7 +2417,7 @@ function AppInner({auth, onLogout}) {
       <div className="app">
         <div className="sidebar">
           <div className="sb-logo">{IC.layers}</div>
-          {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["users","Clients","clients"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
+          {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["wifi","Wireless Clients","clients"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
             <div key={lb} className={`sb-item ${view===vw?"active":""}`} title={lb}
               onClick={()=>{ if(["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"].includes(vw)){ setView(vw); } }}>
               <SBIcon n={ic}/>{badge&&<span className="sb-badge"/>}
@@ -2410,7 +2427,7 @@ function AppInner({auth, onLogout}) {
 
         <div className="main">
           <div className="topbar">
-            <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : view==="clients" ? <>Connected <span>Clients</span></> : <>Device <span>Inventory</span></>}</span>
+            <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : view==="clients" ? <>Wireless <span>Clients</span></> : <>Device <span>Inventory</span></>}</span>
             {view==="inventory" && <button className="tb-btn" onClick={()=>setShowAdd(true)}>{IC.plus} Add device</button>}
             <button className="tb-btn" onClick={doRefresh} disabled={refreshing} title="Reload device data and metrics" style={{minWidth:92,justifyContent:"center"}}>
               {refreshing
