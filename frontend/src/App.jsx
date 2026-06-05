@@ -2337,6 +2337,24 @@ function AppInner({auth, onLogout}) {
     return () => { alive = false; };
   }, [selId, refreshTick]);
 
+  // current AP client throughput (latest "WLAN (clients)" rx/tx sample, bps)
+  const [apThroughput, setApThroughput] = useState(null);
+  useEffect(() => {
+    setApThroughput(null);
+    if (MOCK_MODE || !sel || sel.type !== "ap") return;
+    let alive = true;
+    api.metricInterfaces(sel.id, "1h")
+      .then(r => { if (alive) {
+        const wlan = (r.interfaces||{})["WLAN (clients)"];
+        if (wlan) {
+          const rx = wlan.rx||[], tx = wlan.tx||[];
+          setApThroughput({ rx: rx.length?rx[rx.length-1].v:0, tx: tx.length?tx[tx.length-1].v:0 });
+        } else setApThroughput({rx:0, tx:0});
+      }})
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [selId, refreshTick]);
+
   // Real mode: pull live interfaces from the device when its detail opens.
   useEffect(() => {
     if (MOCK_MODE || !sel) return;
@@ -2554,6 +2572,10 @@ function AppInner({auth, onLogout}) {
                               <div className="metric-val" style={{color:"#58a6ff"}}>{apClientCount!=null?apClientCount:"…"}</div>
                             </div>
                           )}
+                          {sel.type==="ap" && (<>
+                            <div className="metric-card"><div className="metric-label">Client Rx</div><div className="metric-val" style={{color:"#58a6ff"}}>{apThroughput!=null?fmtBps(apThroughput.rx):"…"}</div></div>
+                            <div className="metric-card"><div className="metric-label">Client Tx</div><div className="metric-val" style={{color:"#3fb950"}}>{apThroughput!=null?fmtBps(apThroughput.tx):"…"}</div></div>
+                          </>)}
                         </div>
                       </div>
                     )}
