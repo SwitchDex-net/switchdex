@@ -290,6 +290,17 @@ class MetricSample(Base):
     resolution: Mapped[str] = mapped_column(String(8), default="raw", index=True)
 
 
+class Setting(Base):
+    """Generic app-wide key/value store (JSON text values). Used for shared,
+    org-level settings like the dashboard layout. One row per key."""
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow,
+                                                    onupdate=dt.datetime.utcnow)
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

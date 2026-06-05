@@ -105,6 +105,8 @@ const api = {
   metricInterfaces: (id, range="24h") => _req(`/metrics/devices/${id}/interfaces?range=${range}`),
   metricSummary: (id) => _req(`/metrics/devices/${id}/summary`),
   fleetSummary: () => _req("/metrics/fleet-summary"),
+  dashboardLayout: () => _req("/dashboard/layout"),
+  saveDashboardLayout: (cards) => _req("/dashboard/layout", { method: "PUT", body: {cards} }),
   connectSSH: (id) => {
     const tok = _loadTok();
     const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -438,7 +440,17 @@ tbody tr:hover .row-acts{opacity:1;}
 .dash-kpi-sub{font-size:12px;color:#6e7681;margin-top:8px;}
 .dash-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
 .dash-panel{background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:16px;}
-@media (max-width:900px){.dash-kpis{grid-template-columns:repeat(2,1fr);}.dash-cols{grid-template-columns:1fr;}}
+.dash-cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.dash-cardwrap{min-width:0;}
+.dash-cardwrap:has(.dash-kpis){grid-column:1 / -1;}
+.dash-cardwrap.editing{border:1px dashed #30363d;border-radius:10px;padding:8px;}
+.dash-cardbar{display:flex;align-items:center;gap:6px;padding:4px 6px 8px;}
+.dash-ctl{background:#21262d;border:1px solid #30363d;color:#c9d1d9;border-radius:5px;width:24px;height:24px;cursor:pointer;font-size:13px;line-height:1;display:inline-flex;align-items:center;justify-content:center;}
+.dash-ctl:hover:not(:disabled){background:#30363d;}
+.dash-ctl:disabled{opacity:.35;cursor:default;}
+.dash-add{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px;cursor:pointer;transition:border-color .12s;}
+.dash-add:hover{border-color:#388bfd;}
+@media (max-width:900px){.dash-kpis{grid-template-columns:repeat(2,1fr);}.dash-cols,.dash-cards{grid-template-columns:1fr;}}
 .fr-name{font-weight:500;color:#e6edf3;font-size:13px;}
 .fr-meta{font-size:11px;color:#8b949e;font-family:'IBM Plex Mono',monospace;}
 .bk-status{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500;}
@@ -2527,7 +2539,7 @@ function AppInner({auth, onLogout}) {
           </div>
 
           {view==="dashboard" ? (
-            <DashboardView devices={devices} fleetMetrics={fleetMetrics}
+            <DashboardView auth={auth} devices={devices} fleetMetrics={fleetMetrics}
               onOpenDevice={openQuickView} onNavigate={(v)=>setView(v)}/>
           ) : view==="settings" ? (
             <SettingsView auth={auth}/>
@@ -3055,88 +3067,202 @@ function ClientsView({initialAp, onConsumeFilter}) {
   );
 }
 
-// Fleet overview dashboard — aggregates existing data (no new endpoints).
-function DashboardView({devices, fleetMetrics, onOpenDevice, onNavigate}) {
+// Fleet overview dashboard — layout-driven and editable (admins add/remove/reorder
+// cards from a catalog; the layout is shared org-wide and persisted).
+const DASH_CATALOG = [
+  {type:"kpis",          name:"KPI summary",     desc:"Devices, alerts, vulnerabilities, clients"},
+  {type:"fleet_health",  name:"Fleet health",    desc:"Per-device CPU / memory"},
+  {type:"recent_alerts", name:"Recent alerts",   desc:"Latest open alerts"},
+  {type:"top_talkers",   name:"Top talkers",     desc:"Busiest interfaces by throughput"},
+  {type:"client_summary",name:"Client summary",  desc:"Wireless clients per access point"},
+];
+
+function DashboardView({auth, devices, fleetMetrics, onOpenDevice, onNavigate}) {
+  const isAdmin = auth.user.role === "admin";
   const [alerts, setAlerts] = useState(null);
   const [sec, setSec] = useState(null);
   const [clients, setClients] = useState(null);
+  const [ifaces, setIfaces] = useState(null);   // {device_id: {name:{rx,tx}}} latest, for top talkers
+  const [layout, setLayout] = useState(null);    // [{id,type,config}]
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(null);       // working copy while editing
+  const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(()=>{
-    if (MOCK_MODE) { setAlerts([]); setSec(null); setClients(null); return; }
+    if (MOCK_MODE) { setAlerts([]); setSec(null); setClients(null); setLayout(DASH_CATALOG.slice(0,3).map((c,i)=>({id:`c${i}`,type:c.type,config:{}}))); return; }
     api.listAlerts().then(a=>setAlerts(a||[])).catch(()=>setAlerts([]));
     api.securitySummary().then(setSec).catch(()=>setSec(null));
     api.fleetClients().then(r=>setClients(r||{clients:[]})).catch(()=>setClients(null));
+    api.dashboardLayout().then(r=>setLayout(r.cards||[])).catch(()=>setLayout([]));
   }, []);
 
-  const up = devices.filter(d=>d.status!=="down").length;
-  const down = devices.filter(d=>d.status==="down").length;
-  const openAlerts = (alerts||[]).filter(a=>a.state!=="resolved");
-  const critA = openAlerts.filter(a=>a.severity==="critical").length;
-  const warnA = openAlerts.filter(a=>a.severity==="warning").length;
-  const cveC = sec?.totals?.critical ?? 0;
-  const cveH = sec?.totals?.high ?? 0;
-  const clientCount = clients?.count ?? (clients?.clients?.length ?? null);
+  // lazily fetch interface throughput only if a top_talkers card is present
+  const needTalkers = (layout||[]).some(c=>c.type==="top_talkers");
+  useEffect(()=>{
+    if (MOCK_MODE || !needTalkers || ifaces!==null) return;
+    let alive = true;
+    Promise.all(devices.map(d=>api.metricInterfaces(d.id,"1h").then(r=>({id:d.id,name:d.name,ifs:r.interfaces||{}})).catch(()=>({id:d.id,name:d.name,ifs:{}}))))
+      .then(results=>{ if(alive){ const map={}; results.forEach(r=>map[r.id]=r); setIfaces(map); } });
+    return ()=>{ alive=false; };
+  }, [needTalkers, devices]);
 
-  const card = (label, value, sub, color, onClick)=>(
-    <div className="dash-kpi" onClick={onClick} style={onClick?{cursor:"pointer"}:undefined}>
-      <div className="dash-kpi-label">{label}</div>
-      <div className="dash-kpi-val" style={color?{color}:undefined}>{value}</div>
-      {sub && <div className="dash-kpi-sub">{sub}</div>}
-    </div>
-  );
+  const openAlerts = (alerts||[]).filter(a=>a.state!=="resolved");
+
+  // ── card renderers ──────────────────────────────────────────────
+  function renderCard(type){
+    if (type==="kpis") {
+      const up = devices.filter(d=>d.status!=="down").length;
+      const down = devices.filter(d=>d.status==="down").length;
+      const critA = openAlerts.filter(a=>a.severity==="critical").length;
+      const warnA = openAlerts.filter(a=>a.severity==="warning").length;
+      const cveC = sec?.totals?.critical ?? 0, cveH = sec?.totals?.high ?? 0;
+      const clientCount = clients?.count ?? (clients?.clients?.length ?? null);
+      const kpi = (label,value,sub,color,nav)=>(
+        <div className="dash-kpi" onClick={()=>!editing&&nav&&onNavigate(nav)} style={!editing&&nav?{cursor:"pointer"}:undefined}>
+          <div className="dash-kpi-label">{label}</div>
+          <div className="dash-kpi-val" style={color?{color}:undefined}>{value}</div>
+          {sub&&<div className="dash-kpi-sub">{sub}</div>}
+        </div>
+      );
+      return (
+        <div className="dash-kpis" style={{margin:0}}>
+          {kpi("Devices",devices.length,`${up} up · ${down} down`,down>0?"#e3b341":"#3fb950","inventory")}
+          {kpi("Open alerts",openAlerts.length,openAlerts.length?`${critA} crit · ${warnA} warn`:"all clear",openAlerts.length?(critA>0?"#f85149":"#e3b341"):"#3fb950","alerts")}
+          {kpi("Vulnerabilities",cveC+cveH,sec?`${cveC} crit · ${cveH} high`:"—",cveC>0?"#f85149":cveH>0?"#e3b341":"#3fb950","compliance")}
+          {kpi("Wireless clients",clientCount!=null?clientCount:"…","connected","#58a6ff","clients")}
+        </div>
+      );
+    }
+    if (type==="fleet_health") {
+      const bar=(v)=> v==null?<span style={{color:"#6e7681"}}>—</span>:<span style={{color:v>=85?"#f85149":v>=70?"#e3b341":"#8b949e"}}>{v}%</span>;
+      return (<div className="dash-panel"><div className="sec-title">Fleet health</div>
+        <div className="if-tbl">
+          <div className="if-hdr"><span style={{flex:1}}>Device</span><span style={{width:90,textAlign:"right"}}>CPU</span><span style={{width:90,textAlign:"right"}}>Memory</span></div>
+          {devices.map(d=>{ const m=fleetMetrics[d.id]||{}; const cpu=m.cpu!=null?Math.round(m.cpu):null,mem=m.mem!=null?Math.round(m.mem):null; return (
+            <div key={d.id} className="if-row" onClick={()=>!editing&&onOpenDevice(d.id)}>
+              <span style={{flex:1,display:"flex",alignItems:"center",gap:8,minWidth:0}}><span className="led" style={{width:7,height:7,borderRadius:"50%",background:d.status==="down"?"#f85149":"#3fb950",display:"inline-block",flexShrink:0}}/><span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.name}</span></span>
+              <span style={{width:90,textAlign:"right",fontSize:13}}>{bar(cpu)}</span>
+              <span style={{width:90,textAlign:"right",fontSize:13}}>{bar(mem)}</span>
+            </div>
+          );})}
+        </div></div>);
+    }
+    if (type==="recent_alerts") {
+      return (<div className="dash-panel"><div className="sec-title">Recent alerts</div>
+        {alerts===null ? <div className="cfg-loading"><span className="cfg-spin"/> Loading…</div> :
+         openAlerts.length===0 ? <div className="cfg-empty">No open alerts — fleet is healthy.</div> : (
+          <div className="if-tbl">
+            {openAlerts.slice(0,8).map(a=>(
+              <div key={a.id} className="if-row" onClick={()=>!editing&&a.deviceId&&onOpenDevice(a.deviceId)}>
+                <span className="led" style={{width:7,height:7,borderRadius:"50%",background:a.severity==="critical"?"#f85149":a.severity==="warning"?"#e3b341":"#58a6ff",display:"inline-block",flexShrink:0,marginRight:8}}/>
+                <span style={{flex:1,minWidth:0}}><div style={{fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.title}</div><div style={{fontSize:11,color:"#6e7681"}}>{a.device||""}{a.openedAt?` · ${tsAgo(Date.parse(a.openedAt))}`:""}</div></span>
+              </div>
+            ))}
+          </div>
+        )}</div>);
+    }
+    if (type==="top_talkers") {
+      const rows=[];
+      if (ifaces) for (const id of Object.keys(ifaces)) { const {name,ifs}=ifaces[id]; for (const nm of Object.keys(ifs)) { const rx=ifs[nm].rx||[],tx=ifs[nm].tx||[]; const r=rx.length?rx[rx.length-1].v:0,t=tx.length?tx[tx.length-1].v:0; if (r+t>0) rows.push({dev:name,devId:Number(id),nm,total:r+t}); } }
+      rows.sort((a,b)=>b.total-a.total);
+      return (<div className="dash-panel"><div className="sec-title">Top talkers</div>
+        {ifaces===null ? <div className="cfg-loading"><span className="cfg-spin"/> Loading…</div> :
+         rows.length===0 ? <div className="cfg-empty">No interface traffic recorded yet.</div> : (
+          <div className="if-tbl">
+            <div className="if-hdr"><span style={{flex:1}}>Interface</span><span style={{width:110,textAlign:"right"}}>Throughput</span></div>
+            {rows.slice(0,8).map((r,i)=>(
+              <div key={i} className="if-row" onClick={()=>!editing&&onOpenDevice(r.devId)}>
+                <span style={{flex:1,minWidth:0}}><div style={{fontSize:13}}>{r.nm}</div><div style={{fontSize:11,color:"#6e7681"}}>{r.dev}</div></span>
+                <span style={{width:110,textAlign:"right",fontSize:13,color:"#58a6ff"}}>{fmtBps(r.total)}</span>
+              </div>
+            ))}
+          </div>
+        )}</div>);
+    }
+    if (type==="client_summary") {
+      const list = clients?.clients || [];
+      const byAp = {}; list.forEach(c=>{ const k=c.ap_name||"(unknown)"; byAp[k]=(byAp[k]||0)+1; });
+      const aps = Object.keys(byAp).sort();
+      return (<div className="dash-panel"><div className="sec-title">Wireless clients per AP</div>
+        {clients===null ? <div className="cfg-loading"><span className="cfg-spin"/> Loading…</div> :
+         aps.length===0 ? <div className="cfg-empty">No wireless clients.</div> : (
+          <div className="if-tbl">
+            {aps.map(ap=>(
+              <div key={ap} className="if-row" onClick={()=>!editing&&onNavigate("clients")}>
+                <span style={{flex:1}}>{ap}</span>
+                <span style={{width:60,textAlign:"right",color:"#58a6ff"}}>{byAp[ap]}</span>
+              </div>
+            ))}
+          </div>
+        )}</div>);
+    }
+    return <div className="dash-panel"><div className="cfg-empty">Unknown card: {type}</div></div>;
+  }
+
+  // ── edit-mode helpers ───────────────────────────────────────────
+  function startEdit(){ setDraft((layout||[]).map(c=>({...c}))); setEditing(true); }
+  function cancelEdit(){ setEditing(false); setDraft(null); setAdding(false); }
+  function move(i,dir){ setDraft(d=>{ const a=[...d]; const j=i+dir; if(j<0||j>=a.length) return a; [a[i],a[j]]=[a[j],a[i]]; return a; }); }
+  function removeCard(i){ setDraft(d=>d.filter((_,k)=>k!==i)); }
+  function addCard(type){ setDraft(d=>[...d,{id:`c${Date.now()}`,type,config:{}}]); setAdding(false); }
+  function save(){ setSaving(true); api.saveDashboardLayout(draft).then(()=>{ setLayout(draft); cancelEdit(); }).catch(e=>alert("Save failed: "+e.message)).finally(()=>setSaving(false)); }
+
+  if (layout===null) return <div className="content"><div className="fleet-wrap"><div className="cfg-loading"><span className="cfg-spin"/> Loading dashboard…</div></div></div>;
+
+  const cards = editing ? draft : layout;
 
   return (
     <div className="content">
       <div className="fleet-wrap">
-        <div className="dash-kpis">
-          {card("Devices", devices.length, `${up} up · ${down} down`, down>0?"#e3b341":"#3fb950", ()=>onNavigate("inventory"))}
-          {card("Open alerts", openAlerts.length, openAlerts.length?`${critA} crit · ${warnA} warn`:"all clear", openAlerts.length?(critA>0?"#f85149":"#e3b341"):"#3fb950", ()=>onNavigate("alerts"))}
-          {card("Vulnerabilities", cveC+cveH, sec?`${cveC} crit · ${cveH} high`:"—", cveC>0?"#f85149":cveH>0?"#e3b341":"#3fb950", ()=>onNavigate("compliance"))}
-          {card("Wireless clients", clientCount!=null?clientCount:"…", "connected", "#58a6ff", ()=>onNavigate("clients"))}
+        <div style={{display:"flex",alignItems:"center",marginBottom:16}}>
+          <div style={{fontSize:13,color:"#8b949e"}}>{editing?"Editing dashboard — add, remove, or reorder cards":"Fleet overview"}</div>
+          {isAdmin && <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+            {editing ? (<>
+              <button className="al-btn" onClick={()=>setAdding(a=>!a)}>+ Add card</button>
+              <button className="al-btn ack" onClick={save} disabled={saving}>{saving?"Saving…":"Save"}</button>
+              <button className="al-btn" onClick={cancelEdit}>Cancel</button>
+            </>) : (
+              <button className="al-btn" onClick={startEdit}>{IC.edit} Edit dashboard</button>
+            )}
+          </div>}
         </div>
 
-        <div className="dash-cols">
-          <div className="dash-panel">
-            <div className="sec-title">Fleet health</div>
-            <div className="if-tbl">
-              <div className="if-hdr"><span style={{flex:1}}>Device</span><span style={{width:90,textAlign:"right"}}>CPU</span><span style={{width:90,textAlign:"right"}}>Memory</span></div>
-              {devices.map(d=>{
-                const m = fleetMetrics[d.id]||{};
-                const cpu = m.cpu!=null?Math.round(m.cpu):null, mem = m.mem!=null?Math.round(m.mem):null;
-                const bar = (v)=> v==null?<span style={{color:"#6e7681"}}>—</span> :
-                  <span style={{color: v>=85?"#f85149":v>=70?"#e3b341":"#8b949e"}}>{v}%</span>;
-                return (
-                  <div key={d.id} className="if-row" onClick={()=>onOpenDevice(d.id)}>
-                    <span style={{flex:1,display:"flex",alignItems:"center",gap:8,minWidth:0}}>
-                      <span className="led" style={{width:7,height:7,borderRadius:"50%",background:d.status==="down"?"#f85149":"#3fb950",display:"inline-block",flexShrink:0}}/>
-                      <span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.name}</span>
-                    </span>
-                    <span style={{width:90,textAlign:"right",fontSize:13}}>{bar(cpu)}</span>
-                    <span style={{width:90,textAlign:"right",fontSize:13}}>{bar(mem)}</span>
-                  </div>
-                );
-              })}
+        {editing && adding && (
+          <div className="dash-panel" style={{marginBottom:14}}>
+            <div className="sec-title">Add a card</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:10}}>
+              {DASH_CATALOG.map(c=>(
+                <div key={c.type} className="dash-add" onClick={()=>addCard(c.type)}>
+                  <div style={{fontWeight:600,fontSize:13}}>{c.name}</div>
+                  <div style={{fontSize:12,color:"#6e7681",marginTop:3}}>{c.desc}</div>
+                </div>
+              ))}
             </div>
           </div>
+        )}
 
-          <div className="dash-panel">
-            <div className="sec-title">Recent alerts</div>
-            {alerts===null ? <div className="cfg-loading"><span className="cfg-spin"/> Loading…</div> :
-             openAlerts.length===0 ? <div className="cfg-empty">No open alerts — fleet is healthy.</div> : (
-              <div className="if-tbl">
-                {openAlerts.slice(0,8).map(a=>(
-                  <div key={a.id} className="if-row" onClick={()=>a.deviceId&&onOpenDevice(a.deviceId)}>
-                    <span className="led" style={{width:7,height:7,borderRadius:"50%",background:a.severity==="critical"?"#f85149":a.severity==="warning"?"#e3b341":"#58a6ff",display:"inline-block",flexShrink:0,marginRight:8}}/>
-                    <span style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.title}</div>
-                      <div style={{fontSize:11,color:"#6e7681"}}>{a.device||""}{a.openedAt?` · ${tsAgo(Date.parse(a.openedAt))}`:""}</div>
+        {cards.length===0 ? (
+          <div className="cfg-empty">No cards. {isAdmin?"Click “Edit dashboard” then “Add card” to build your overview.":"An admin hasn’t configured the dashboard yet."}</div>
+        ) : (
+          <div className="dash-cards">
+            {cards.map((c,i)=>(
+              <div key={c.id} className={`dash-cardwrap ${editing?"editing":""}`}>
+                {editing && (
+                  <div className="dash-cardbar">
+                    <span style={{fontSize:12,color:"#8b949e"}}>{(DASH_CATALOG.find(x=>x.type===c.type)||{}).name||c.type}</span>
+                    <span style={{marginLeft:"auto",display:"flex",gap:4}}>
+                      <button className="dash-ctl" onClick={()=>move(i,-1)} disabled={i===0} title="Move up">↑</button>
+                      <button className="dash-ctl" onClick={()=>move(i,1)} disabled={i===cards.length-1} title="Move down">↓</button>
+                      <button className="dash-ctl" onClick={()=>removeCard(i)} title="Remove" style={{color:"#f85149"}}>×</button>
                     </span>
                   </div>
-                ))}
+                )}
+                {renderCard(c.type)}
               </div>
-            )}
+            ))}
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
