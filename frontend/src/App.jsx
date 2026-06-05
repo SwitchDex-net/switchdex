@@ -1565,6 +1565,66 @@ function EditDeviceModal({device, onClose, onSaved}) {
 }
 
 /* ───────────────────────── Config Archive (device tab) ─────────────── */
+// Open/recent alerts scoped to a single device, shown in its detail view.
+function DeviceAlerts({device, auth}) {
+  const [alerts, setAlerts] = useState(null);
+  const [showResolved, setShowResolved] = useState(false);
+  const isAdmin = auth.user.role === "admin";
+
+  function load(){
+    if (MOCK_MODE) { setAlerts([]); return; }
+    api.listAlerts().then(all=>{
+      setAlerts((all||[]).filter(a=>a.deviceId===device.id));
+    }).catch(()=>setAlerts([]));
+  }
+  useEffect(()=>{ load(); }, [device.id]);
+
+  function ack(id){ if(!MOCK_MODE) api.ackAlert(id).then(load); }
+  function resolve(id){ if(!MOCK_MODE) api.resolveAlert(id).then(load); }
+
+  if (alerts===null) return <div className="cfg-loading"><span className="cfg-spin"/> Loading alerts…</div>;
+
+  const active = alerts.filter(a=>a.state!=="resolved");
+  const resolved = alerts.filter(a=>a.state==="resolved");
+  const sevIcon = (s)=> s==="critical"?IC.warn:s==="warning"?IC.bolt:IC.info;
+  const shown = showResolved ? alerts : active;
+
+  return (
+    <div className="dpane">
+      {active.length===0 ? (
+        <div className="cfg-empty" style={{margin:"8px 0"}}>
+          {IC.check} No open alerts for this device.
+          {resolved.length>0 && <div style={{marginTop:8,fontSize:12}}><span style={{color:"#58a6ff",cursor:"pointer"}} onClick={()=>setShowResolved(s=>!s)}>{showResolved?"Hide":"Show"} {resolved.length} resolved</span></div>}
+        </div>
+      ) : (
+        <>
+          <div style={{display:"flex",alignItems:"center",marginBottom:10}}>
+            <div style={{fontSize:13,color:"#8b949e"}}>{active.length} open alert{active.length===1?"":"s"} on {device.name}</div>
+            {resolved.length>0 && <div style={{marginLeft:"auto",fontSize:12,color:"#58a6ff",cursor:"pointer"}} onClick={()=>setShowResolved(s=>!s)}>{showResolved?"Hide":"Show"} resolved ({resolved.length})</div>}
+          </div>
+        </>
+      )}
+      {shown.map(a=>(
+        <div className="al-row" key={a.id} style={{opacity:a.state==="resolved"?0.55:1}}>
+          <div className={`al-sev ${a.severity}`}/>
+          <div className={`al-icon ${a.severity}`}>{sevIcon(a.severity)}</div>
+          <div className="al-body">
+            <div className="al-title">{a.title}</div>
+            <div className="al-detail">{a.detail}</div>
+            <div className="al-meta">{a.severity} · {a.state}{a.openedAt?` · ${tsAgo(Date.parse(a.openedAt))}`:""}{a.ackBy?` · ack ${a.ackBy}`:""}</div>
+          </div>
+          {a.state!=="resolved" && (
+            <>
+              {a.state==="open" && <button className="al-btn ack" onClick={()=>ack(a.id)}>Ack</button>}
+              {isAdmin && <button className="al-btn resolve" onClick={()=>resolve(a.id)}>Resolve</button>}
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ConfigArchive({device, archive, onBackup, onRestore}) {
   const [versions, setVersions] = useState([]);     // normalized: ts in ms (newest first)
   const [loading, setLoading] = useState(!MOCK_MODE);
@@ -2240,6 +2300,7 @@ function AppInner({auth, onLogout}) {
                   {fullId!=null && <div className="pback" title="Back to inventory" onClick={()=>{setFullId(null);}} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:4,fontSize:13,color:"#58a6ff",marginRight:12}}>‹ Back</div>}
                   <div className={`ptab ${tab==="detail"?"active":""}`} onClick={()=>{setTab("detail");}}>{selIface?"Interface":"Details"}</div>
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="configs"?"active":""}`} onClick={()=>setTab("configs")}>Configs</div>}
+                  <div className={`ptab ${tab==="alerts"?"active":""}`} onClick={()=>setTab("alerts")}>Alerts</div>
                   {sel.capability!=="readonly" && <div className={`ptab ${tab==="ssh"?"active":""}`} onClick={()=>setTab("ssh")}>Terminal</div>}
                   <div className="pclose" title="Edit device" onClick={()=>setEditId(sel.id)} style={{marginLeft:"auto"}}>{IC.edit}</div>
                   <div className="pclose" title="Remove device" onClick={()=>removeDevice(sel.id)} style={{color:"#f85149"}}>{IC.trash || IC.x}</div>
@@ -2343,6 +2404,8 @@ function AppInner({auth, onLogout}) {
                   <ConfigArchive key={sel.id} device={sel} archive={archive}
                     onBackup={(id)=>backupDevice(id,"manual")} onRestore={restoreConfig}/>
                 )}
+
+                {tab==="alerts" && <DeviceAlerts key={sel.id} device={sel} auth={auth}/>}
 
                 {tab==="ssh" && <SSHPane key={sel.id} device={sel} onUpdate={updateDevice}/>}
               </>}
