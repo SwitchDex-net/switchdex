@@ -430,6 +430,15 @@ tbody tr:hover .row-acts{opacity:1;}
 .if-row{display:flex;align-items:center;gap:12px;padding:9px 14px;border-bottom:1px solid #161b22;cursor:pointer;transition:background .1s;}
 .if-row:last-child{border-bottom:none;}
 .if-row:hover{background:#161b22;}
+.dash-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+.dash-kpi{background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:16px 18px;transition:border-color .12s;}
+.dash-kpi:hover{border-color:#388bfd;}
+.dash-kpi-label{font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;}
+.dash-kpi-val{font-size:30px;font-weight:600;line-height:1;}
+.dash-kpi-sub{font-size:12px;color:#6e7681;margin-top:8px;}
+.dash-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.dash-panel{background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:16px;}
+@media (max-width:900px){.dash-kpis{grid-template-columns:repeat(2,1fr);}.dash-cols{grid-template-columns:1fr;}}
 .fr-name{font-weight:500;color:#e6edf3;font-size:13px;}
 .fr-meta{font-size:11px;color:#8b949e;font-family:'IBM Plex Mono',monospace;}
 .bk-status{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500;}
@@ -2260,14 +2269,14 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
 function AppInner({auth, onLogout}) {
   const [devices, setDevices] = useState(MOCK_MODE ? INIT_DEVICES : []);
   const [loading, setLoading] = useState(!MOCK_MODE);
-  const VIEWS = ["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"];
+  const VIEWS = ["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"];
   // Parse the URL hash into { view, selId }. Forms: #/inventory, #/devices/5
   function parseHash(){
     const h = (window.location.hash || "").replace(/^#\/?/, "");
     const [seg, id, mode] = h.split("/");
     if (seg === "devices") return { view: "inventory", selId: id ? Number(id) : null, full: mode === "full" };
     if (VIEWS.includes(seg)) return { view: seg, selId: null, full: false };
-    return { view: "inventory", selId: null, full: false };
+    return { view: "dashboard", selId: null, full: false };
   }
   const _init = parseHash();
   const [selId, setSelId] = useState(_init.selId);
@@ -2496,7 +2505,7 @@ function AppInner({auth, onLogout}) {
           <div className="sb-logo">{IC.layers}</div>
           {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["wifi","Wireless Clients","clients"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
             <div key={lb} className={`sb-item ${view===vw?"active":""}`} title={lb}
-              onClick={()=>{ if(["inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"].includes(vw)){ setView(vw); } }}>
+              onClick={()=>{ if(["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients"].includes(vw)){ setView(vw); } }}>
               <SBIcon n={ic}/>{badge&&<span className="sb-badge"/>}
             </div>
           ))}
@@ -2504,7 +2513,7 @@ function AppInner({auth, onLogout}) {
 
         <div className="main">
           <div className="topbar">
-            <span className="topbar-title">{view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : view==="clients" ? <>Wireless <span>Clients</span></> : <>Device <span>Inventory</span></>}</span>
+            <span className="topbar-title">{view==="dashboard" ? <>Dashboard</> : view==="configmgmt" ? <>Config <span>Management</span></> : view==="settings" ? <>Settings <span>&amp; Access</span></> : view==="integrations" ? <>Integrations</> : view==="topology" ? <>Network <span>Topology</span></> : view==="alerts" ? <>Alerts <span>&amp; Notifications</span></> : view==="compliance" ? <>Security</> : view==="telemetry" ? <>Telemetry</> : view==="clients" ? <>Wireless <span>Clients</span></> : <>Device <span>Inventory</span></>}</span>
             {view==="inventory" && <button className="tb-btn" onClick={()=>setShowAdd(true)}>{IC.plus} Add device</button>}
             <button className="tb-btn" onClick={doRefresh} disabled={refreshing} title="Reload device data and metrics" style={{minWidth:92,justifyContent:"center"}}>
               {refreshing
@@ -2517,7 +2526,10 @@ function AppInner({auth, onLogout}) {
             </div>
           </div>
 
-          {view==="settings" ? (
+          {view==="dashboard" ? (
+            <DashboardView devices={devices} fleetMetrics={fleetMetrics}
+              onOpenDevice={openQuickView} onNavigate={(v)=>setView(v)}/>
+          ) : view==="settings" ? (
             <SettingsView auth={auth}/>
           ) : view==="telemetry" ? (
             <TelemetryView devices={devices} initialDeviceId={selId}/>
@@ -3038,6 +3050,93 @@ function ClientsView({initialAp, onConsumeFilter}) {
           </div>
         )}
         <div style={{marginTop:10,fontSize:11,color:"#6e7681"}}>Link rate is the negotiated Wi-Fi PHY rate, not live throughput.</div>
+      </div>
+    </div>
+  );
+}
+
+// Fleet overview dashboard — aggregates existing data (no new endpoints).
+function DashboardView({devices, fleetMetrics, onOpenDevice, onNavigate}) {
+  const [alerts, setAlerts] = useState(null);
+  const [sec, setSec] = useState(null);
+  const [clients, setClients] = useState(null);
+
+  useEffect(()=>{
+    if (MOCK_MODE) { setAlerts([]); setSec(null); setClients(null); return; }
+    api.listAlerts().then(a=>setAlerts(a||[])).catch(()=>setAlerts([]));
+    api.securitySummary().then(setSec).catch(()=>setSec(null));
+    api.fleetClients().then(r=>setClients(r||{clients:[]})).catch(()=>setClients(null));
+  }, []);
+
+  const up = devices.filter(d=>d.status!=="down").length;
+  const down = devices.filter(d=>d.status==="down").length;
+  const openAlerts = (alerts||[]).filter(a=>a.state!=="resolved");
+  const critA = openAlerts.filter(a=>a.severity==="critical").length;
+  const warnA = openAlerts.filter(a=>a.severity==="warning").length;
+  const cveC = sec?.totals?.critical ?? 0;
+  const cveH = sec?.totals?.high ?? 0;
+  const clientCount = clients?.count ?? (clients?.clients?.length ?? null);
+
+  const card = (label, value, sub, color, onClick)=>(
+    <div className="dash-kpi" onClick={onClick} style={onClick?{cursor:"pointer"}:undefined}>
+      <div className="dash-kpi-label">{label}</div>
+      <div className="dash-kpi-val" style={color?{color}:undefined}>{value}</div>
+      {sub && <div className="dash-kpi-sub">{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div className="content">
+      <div className="fleet-wrap">
+        <div className="dash-kpis">
+          {card("Devices", devices.length, `${up} up · ${down} down`, down>0?"#e3b341":"#3fb950", ()=>onNavigate("inventory"))}
+          {card("Open alerts", openAlerts.length, openAlerts.length?`${critA} crit · ${warnA} warn`:"all clear", openAlerts.length?(critA>0?"#f85149":"#e3b341"):"#3fb950", ()=>onNavigate("alerts"))}
+          {card("Vulnerabilities", cveC+cveH, sec?`${cveC} crit · ${cveH} high`:"—", cveC>0?"#f85149":cveH>0?"#e3b341":"#3fb950", ()=>onNavigate("compliance"))}
+          {card("Wireless clients", clientCount!=null?clientCount:"…", "connected", "#58a6ff", ()=>onNavigate("clients"))}
+        </div>
+
+        <div className="dash-cols">
+          <div className="dash-panel">
+            <div className="sec-title">Fleet health</div>
+            <div className="if-tbl">
+              <div className="if-hdr"><span style={{flex:1}}>Device</span><span style={{width:90,textAlign:"right"}}>CPU</span><span style={{width:90,textAlign:"right"}}>Memory</span></div>
+              {devices.map(d=>{
+                const m = fleetMetrics[d.id]||{};
+                const cpu = m.cpu!=null?Math.round(m.cpu):null, mem = m.mem!=null?Math.round(m.mem):null;
+                const bar = (v)=> v==null?<span style={{color:"#6e7681"}}>—</span> :
+                  <span style={{color: v>=85?"#f85149":v>=70?"#e3b341":"#8b949e"}}>{v}%</span>;
+                return (
+                  <div key={d.id} className="if-row" onClick={()=>onOpenDevice(d.id)}>
+                    <span style={{flex:1,display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+                      <span className="led" style={{width:7,height:7,borderRadius:"50%",background:d.status==="down"?"#f85149":"#3fb950",display:"inline-block",flexShrink:0}}/>
+                      <span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{d.name}</span>
+                    </span>
+                    <span style={{width:90,textAlign:"right",fontSize:13}}>{bar(cpu)}</span>
+                    <span style={{width:90,textAlign:"right",fontSize:13}}>{bar(mem)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="dash-panel">
+            <div className="sec-title">Recent alerts</div>
+            {alerts===null ? <div className="cfg-loading"><span className="cfg-spin"/> Loading…</div> :
+             openAlerts.length===0 ? <div className="cfg-empty">No open alerts — fleet is healthy.</div> : (
+              <div className="if-tbl">
+                {openAlerts.slice(0,8).map(a=>(
+                  <div key={a.id} className="if-row" onClick={()=>a.deviceId&&onOpenDevice(a.deviceId)}>
+                    <span className="led" style={{width:7,height:7,borderRadius:"50%",background:a.severity==="critical"?"#f85149":a.severity==="warning"?"#e3b341":"#58a6ff",display:"inline-block",flexShrink:0,marginRight:8}}/>
+                    <span style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.title}</div>
+                      <div style={{fontSize:11,color:"#6e7681"}}>{a.device||""}{a.openedAt?` · ${tsAgo(Date.parse(a.openedAt))}`:""}</div>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
