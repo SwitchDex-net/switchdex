@@ -1130,6 +1130,17 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
   const [busy,setBusy] = useState(false);
   const [result,setResult] = useState(null);     // {ok, output, verify, error}
 
+  // live throughput history for this interface (rx/tx), if telemetry has it
+  const [ifMetrics,setIfMetrics] = useState(null);  // {rx:[{t,v}], tx:[{t,v}]} | undefined
+  const [ifRange,setIfRange] = useState("6h");
+  useEffect(()=>{
+    if (MOCK_MODE) { setIfMetrics(undefined); return; }
+    setIfMetrics(null);
+    api.metricInterfaces(device.id, ifRange)
+      .then(r=>setIfMetrics((r.interfaces||{})[ifaceName]))
+      .catch(()=>setIfMetrics(undefined));
+  }, [device.id, ifaceName, ifRange]);
+
   const vlanOptions = Array.from(new Set([...Object.keys(device.vlans||{}), vlan])).filter(Boolean).sort((a,b)=>+a-+b);
 
   function buildCfg() {
@@ -1170,6 +1181,34 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
         <div className="ed-title">{ifaceName}</div>
         <div className="dsub">{device.name} · {device.vendor} · {orig.speed}</div>
       </div>
+
+      {ifMetrics && (ifMetrics.rx?.length || ifMetrics.tx?.length) ? (() => {
+        const rx = (ifMetrics.rx||[]).map(p=>({t:p.t, v:+(p.v/1e6).toFixed(3)}));
+        const tx = (ifMetrics.tx||[]).map(p=>({t:p.t, v:+(p.v/1e6).toFixed(3)}));
+        const peak = Math.max(0.01, ...rx.map(p=>p.v), ...tx.map(p=>p.v));
+        const lastRx = rx.length?rx[rx.length-1].v:0, lastTx = tx.length?tx[tx.length-1].v:0;
+        return (
+          <div className="ed-field" style={{marginTop:14}}>
+            <div style={{display:"flex",alignItems:"center",marginBottom:8}}>
+              <label className="ed-label" style={{margin:0}}>Throughput</label>
+              <div className="seg" style={{marginLeft:"auto"}}>
+                {["1h","6h","24h","7d"].map(r=>(
+                  <button key={r} className={`seg-btn ${ifRange===r?"on":""}`} onClick={()=>setIfRange(r)}>{r}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:18,marginBottom:6,fontSize:12,alignItems:"center"}}>
+              <span style={{color:"#58a6ff"}}>● Rx {lastRx.toFixed(2)} Mbps</span>
+              <span style={{color:"#3fb950"}}>● Tx {lastTx.toFixed(2)} Mbps</span>
+              <span style={{color:"#8b949e",marginLeft:"auto"}}>peak {peak.toFixed(2)} Mbps</span>
+            </div>
+            <LineChart series={[{points:rx,color:"#58a6ff"},{points:tx,color:"#3fb950"}]}
+                       height={150} unit=" Mbps" max={peak*1.15}/>
+          </div>
+        );
+      })() : ifMetrics===null ? (
+        <div className="cfg-empty" style={{margin:"12px 0",fontSize:12}}>Loading throughput…</div>
+      ) : null}
 
       <div className="tgl-row">
         <span className="tgl-label">Admin status — <span style={{color:enabled?"#3fb950":"#f85149"}}>{enabled?"enabled":"shutdown"}</span></span>
