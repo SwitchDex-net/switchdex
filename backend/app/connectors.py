@@ -120,24 +120,24 @@ class UniFiConnector:
         return out
 
     def device_metrics(self, ext):
-        r = self._sess.get(self._api("/stat/device"), timeout=15)
+        """Per-device metrics from the Omada Open API. The device list already
+        carries cpuUtil/memUtil/uptime, so reuse that endpoint rather than a
+        separate (UniFi-style) stat call."""
+        site_id = self._resolve_site_id()
+        url = f"{self.ctrl.base_url}/openapi/v1/{self._cid}/sites/{site_id}/devices"
+        r = self._http.get(url, headers=self._hdr(),
+                           params={"page": 1, "pageSize": 100}, timeout=15)
         r.raise_for_status()
-        for d in r.json().get("data", []):
-            if (d.get("_id") or d.get("mac")) == ext:
-                sysstats = d.get("sys_stats", {})
+        body = r.json().get("result", [])
+        rows = body.get("data", body) if isinstance(body, dict) else body
+        for d in rows:
+            if d.get("mac") == ext:
                 return {
-                    "cpu": float(sysstats.get("cpu", 0) or 0),
-                    "mem": float(sysstats.get("mem", 0) or 0),
-                    "uptime": d.get("uptime", 0),
-                    "clients": d.get("num_sta", 0),
-                    "rx_bytes": d.get("rx_bytes", 0),
-                    "tx_bytes": d.get("tx_bytes", 0),
-                    "ports": [
-                        {"idx": p.get("port_idx"), "up": p.get("up"),
-                         "speed": p.get("speed"), "poe": p.get("poe_power"),
-                         "rx": p.get("rx_bytes"), "tx": p.get("tx_bytes")}
-                        for p in d.get("port_table", [])
-                    ],
+                    "cpu": float(d.get("cpuUtil", 0) or 0),
+                    "mem": float(d.get("memUtil", 0) or 0),
+                    "uptime": _omada_uptime_secs(d.get("uptime", 0)),
+                    "clients": d.get("clientNum", 0) or d.get("clientNumber", 0) or 0,
+                    "ports": [],
                 }
         return {}
 
@@ -268,6 +268,30 @@ class OmadaConnector:
 
 def _omada_type(t):
     return {"switch": "switch", "gateway": "router", "ap": "ap"}.get(str(t).lower(), "switch")
+
+
+def _omada_uptime_secs(v):
+    """Omada reports uptime as an int (seconds) or a string like
+    '68day(s) 12h 23m 53s'. Normalize to seconds."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    if not v:
+        return 0.0
+    import re
+    s = str(v)
+    total = 0.0
+    for num, unit in re.findall(r"(\d+)\s*(day|d|h|hour|m|min|s|sec)", s, re.I):
+        n = int(num)
+        u = unit.lower()
+        if u.startswith("day") or u == "d":
+            total += n * 86400
+        elif u.startswith("h"):
+            total += n * 3600
+        elif u.startswith("m"):
+            total += n * 60
+        else:
+            total += n
+    return total
 
 
 # ───────────────────────── simulated fallback ──────────────────────────

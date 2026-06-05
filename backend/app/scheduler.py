@@ -87,16 +87,23 @@ async def discover_neighbors():
 
 
 async def poll_controllers():
-    """Refresh read-only telemetry from UniFi/Omada controllers."""
+    """Refresh the controller's device list + read-only state (every 5 min is
+    plenty — inventory doesn't churn fast)."""
     async with SessionLocal() as s:
         cids = (await s.execute(
             select(Controller.id).where(Controller.enabled == True))).scalars().all()  # noqa: E712
     for cid in cids:
         res = await sync_one(cid)
         log.info("controller %s sync: %s", cid, "ok" if res.get("ok") else res.get("error"))
-    # sample controller-managed devices' metrics at this (slower) cadence so we
-    # don't exceed controller API rate limits with the fast SNMP interval
-    if cids:
+
+
+async def sample_controller_metrics():
+    """Sample controller-managed device metrics (AP/switch CPU/mem/uptime) on a
+    faster cadence. Safe to poll frequently against a self-hosted controller."""
+    async with SessionLocal() as s:
+        any_ctrl = (await s.execute(
+            select(Controller.id).where(Controller.enabled == True))).scalars().first()  # noqa: E712
+    if any_ctrl:
         n = await tel.collect_once(scope="controller")
         log.info("controller-device telemetry sampled (%d rows)", n)
 
@@ -106,11 +113,14 @@ async def main():
     await alert_engine.seed_default_rules()
     sched = AsyncIOScheduler()
     sched.add_job(backup_fleet, "interval", hours=1)
-    # poll closed-ecosystem controllers every 5 minutes for fresh read-only telemetry
+    # refresh controller device list every 5 minutes (inventory changes slowly)
     sched.add_job(poll_controllers, "interval", minutes=5)
+    # sample controller-managed device metrics every 60s (self-hosted controller,
+    # no cloud API quota — responsive AP/switch telemetry)
+    sched.add_job(sample_controller_metrics, "interval", seconds=60)
     # evaluate alert rules every 60 seconds
     sched.add_job(alert_engine.evaluate, "interval", seconds=60)
-    # sample device telemetry on the configured interval
+    # sample open-protocol (SNMP) device telemetry on the configured interval
     sched.add_job(tel.collect_once, "interval", seconds=settings.metrics_interval)
 
     sched.add_job(discover_neighbors, "interval", minutes=15)
