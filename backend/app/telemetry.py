@@ -53,41 +53,59 @@ async def collect_once(scope="open"):
             rows.append(MetricSample(device_id=d.id, ts=now, metric="reachable", value=reachable))
             if uptime_secs:
                 rows.append(MetricSample(device_id=d.id, ts=now, metric="uptime", value=uptime_secs))
-            for ifname, (rx, tx) in ifrates.items():
-                rows.append(MetricSample(device_id=d.id, ts=now, metric="if_rx", label=ifname, value=rx))
-                rows.append(MetricSample(device_id=d.id, ts=now, metric="if_tx", label=ifname, value=tx))
+            for ifname, m in ifrates.items():
+                rows.append(MetricSample(device_id=d.id, ts=now, metric="if_rx", label=ifname, value=m.get("rx", 0)))
+                rows.append(MetricSample(device_id=d.id, ts=now, metric="if_tx", label=ifname, value=m.get("tx", 0)))
+                if m.get("in_err") or m.get("out_err"):
+                    rows.append(MetricSample(device_id=d.id, ts=now, metric="if_inerr", label=ifname, value=m.get("in_err", 0)))
+                    rows.append(MetricSample(device_id=d.id, ts=now, metric="if_outerr", label=ifname, value=m.get("out_err", 0)))
         s.add_all(rows)
         await s.commit()
     return len(rows)
 
 
 async def _sample_device(dev):
-    """Return (cpu, mem, reachable, {iface: (rx_mbps, tx_mbps)})."""
+    """Return (cpu, mem, reachable, {iface: {rx, tx, in_err, out_err, status}}, uptime).
+    Rates are bps; errors are per-second."""
     if settings.device_backend != "sim":
-        # real mode: controller-managed devices expose metrics via their API;
-        # open-protocol devices would be polled via SNMP/streaming telemetry.
         if dev.controller_id:
             try:
                 async with SessionLocal() as s:
                     from .db import Controller
                     ctrl = await s.get(Controller, dev.controller_id)
                 m = await connectors.fetch_metrics(ctrl, dev.external_id)
-                ports = {f"port{p.get('idx')}": (float(p.get("rx", 0) or 0) / 1e6,
-                                                 float(p.get("tx", 0) or 0) / 1e6)
-                         for p in m.get("ports", [])[:8]}
+                ports = {}
+                for p in m.get("ports", [])[:16]:
+                    nm = f"port{p.get('idx')}"
+                    ports[nm] = {"rx": float(p.get("rx", 0) or 0), "tx": float(p.get("tx", 0) or 0),
+                                 "in_err": 0, "out_err": 0,
+                                 "status": "up" if p.get("up") else "down"}
                 return (float(m.get("cpu", 0)), float(m.get("mem", 0)), 1.0, ports,
                         float(m.get("uptime", 0) or 0))
             except Exception:  # noqa: BLE001
                 return 0, 0, 0.0, {}, 0.0
-        # open-protocol devices: poll health over SNMP (CPU/mem/uptime)
+        # open-protocol devices: poll health + interface rates over SNMP
         community = dev.snmp_community or settings.default_snmp_community
         if community and dev.ip:
             try:
                 from . import devices as drv
                 m = await asyncio.to_thread(drv.snmp_metrics, dev.ip, community)
                 reachable = 1.0 if m.get("reachable") else (1.0 if dev.status == "up" else 0.0)
+                ifrates = {}
+                try:
+                    raw = await asyncio.to_thread(drv.snmp_interface_rates, dev.ip, community)
+                    for nm, r in raw.items():
+                        # store physical/active interfaces only — skip the long tail of
+                        # logical/down ifs to keep the series count manageable
+                        if r["status"] != "up" and r["rx_bps"] == 0 and r["tx_bps"] == 0:
+                            continue
+                        ifrates[nm] = {"rx": r["rx_bps"], "tx": r["tx_bps"],
+                                       "in_err": r["in_err_ps"], "out_err": r["out_err_ps"],
+                                       "status": r["status"]}
+                except Exception:  # noqa: BLE001
+                    ifrates = {}
                 return (float(m.get("cpu", 0)), float(m.get("mem", 0)), reachable,
-                        {}, float(m.get("uptime_secs", 0) or 0))
+                        ifrates, float(m.get("uptime_secs", 0) or 0))
             except Exception:  # noqa: BLE001
                 return 0, 0, (1.0 if dev.status == "up" else 0.0), {}, 0.0
         return (float(getattr(dev, "cpu", 0) or 0), float(getattr(dev, "mem", 0) or 0),
@@ -110,7 +128,8 @@ async def _sample_device(dev):
     for i, nm in enumerate(names):
         rx = max(0, 200 + 150 * math.sin(t + i + seed) + random.uniform(-40, 40))
         tx = max(0, 120 + 90 * math.sin(t / 1.5 + i + seed) + random.uniform(-30, 30))
-        ifaces[nm] = (round(rx, 1), round(tx, 1))
+        ifaces[nm] = {"rx": round(rx * 1e6, 1), "tx": round(tx * 1e6, 1),
+                      "in_err": 0, "out_err": 0, "status": "up"}
     return round(cpu, 1), round(mem, 1), reachable, ifaces, float(86400 * (3 + seed % 60))
 
 
