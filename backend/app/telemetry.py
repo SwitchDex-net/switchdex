@@ -59,9 +59,70 @@ async def collect_once(scope="open"):
                 if m.get("in_err") or m.get("out_err"):
                     rows.append(MetricSample(device_id=d.id, ts=now, metric="if_inerr", label=ifname, value=m.get("in_err", 0)))
                     rows.append(MetricSample(device_id=d.id, ts=now, metric="if_outerr", label=ifname, value=m.get("out_err", 0)))
+        # AP client-traffic throughput (controller scope): sum each AP's clients'
+        # cumulative traffic counters and delta to bps, stored as if_rx/if_tx under
+        # a "WLAN (clients)" label so APs appear in the existing interface charts.
+        if scope in ("controller", "all"):
+            try:
+                rows += await _ap_client_throughput(devices, now)
+            except Exception:  # noqa: BLE001
+                pass
         s.add_all(rows)
         await s.commit()
     return len(rows)
+
+
+# cache for AP client-traffic counter-delta: {ap_device_id: {"down":bytes,"up":bytes,"ts":float}}
+_AP_TRAFFIC_CACHE = {}
+
+
+async def _ap_client_throughput(devices, now):
+    """For each controller-managed AP, sum connected clients' cumulative traffic
+    counters and compute bps by diffing against the previous reading. Returns
+    MetricSample rows (if_rx/if_tx, label 'WLAN (clients)')."""
+    import time as _time
+    aps = [d for d in devices if d.device_type == "ap" and d.controller_id]
+    if not aps:
+        return []
+    # fetch clients per controller once, group by ap_mac/ap_name
+    from .db import Controller
+    by_ctrl = {}
+    for d in aps:
+        by_ctrl.setdefault(d.controller_id, []).append(d)
+    out, ts = [], _time.time()
+    for cid, ap_devs in by_ctrl.items():
+        async with SessionLocal() as s:
+            ctrl = await s.get(Controller, cid)
+        if not ctrl:
+            continue
+        try:
+            clients = await connectors.list_clients(ctrl)
+        except Exception:  # noqa: BLE001
+            continue
+        # sum cumulative bytes per AP (match on mac first, then name)
+        for ap in ap_devs:
+            down = up = 0
+            for c in clients:
+                if c.get("ap_mac") == ap.external_id or c.get("ap_name") == ap.name:
+                    down += int(c.get("traffic_down", 0) or 0)
+                    up += int(c.get("traffic_up", 0) or 0)
+            prev = _AP_TRAFFIC_CACHE.get(ap.id)
+            rx_bps = tx_bps = 0.0
+            if prev:
+                dt_s = ts - prev["ts"]
+                if dt_s > 0:
+                    d_down, d_up = down - prev["down"], up - prev["up"]
+                    # client roster changes can make the sum drop; treat as 0 not negative
+                    if d_down >= 0:
+                        rx_bps = d_down * 8 / dt_s
+                    if d_up >= 0:
+                        tx_bps = d_up * 8 / dt_s
+            _AP_TRAFFIC_CACHE[ap.id] = {"down": down, "up": up, "ts": ts}
+            out.append(MetricSample(device_id=ap.id, ts=now, metric="if_rx",
+                                    label="WLAN (clients)", value=round(rx_bps, 1)))
+            out.append(MetricSample(device_id=ap.id, ts=now, metric="if_tx",
+                                    label="WLAN (clients)", value=round(tx_bps, 1)))
+    return out
 
 
 async def _sample_device(dev):
