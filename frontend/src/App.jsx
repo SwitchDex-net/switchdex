@@ -2818,6 +2818,8 @@ function SecurityView({auth, devices, onOpenDevice}) {
             <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
               {d.critical>0 && <span className="sev-pill" style={{background:"#f8514922",color:"#f85149"}}>{d.critical} crit</span>}
               {d.high>0 && <span className="sev-pill" style={{background:"#e3b34122",color:"#e3b341"}}>{d.high} high</span>}
+              {d.medium>0 && <span className="sev-pill" style={{background:"#58a6ff22",color:"#58a6ff"}}>{d.medium} med</span>}
+              {d.low>0 && <span className="sev-pill" style={{background:"#8b949622",color:"#8b949e"}}>{d.low} low</span>}
               {d.total===0 && d.covered===true && <span style={{fontSize:12,color:"#3fb950"}}>clear</span>}
               {d.total===0 && d.covered===false && <span style={{fontSize:12,color:"#8b949e"}} title="NVD has no CVE records for this product, so it cannot be assessed this way">no NVD coverage</span>}
               {d.total===0 && (d.covered===null||d.covered===undefined) && !d.cpe && <span style={{fontSize:12,color:"#6e7681"}}>—</span>}
@@ -2840,6 +2842,7 @@ function SecurityView({auth, devices, onOpenDevice}) {
               <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
                 {c.critical>0 && <span className="sev-pill" style={{background:"#f8514922",color:"#f85149"}}>{c.critical} crit</span>}
                 {c.high>0 && <span className="sev-pill" style={{background:"#e3b34122",color:"#e3b341"}}>{c.high} high</span>}
+                {c.total>0 && c.critical===0 && c.high===0 && <span className="sev-pill" style={{background:"#58a6ff22",color:"#58a6ff"}}>{c.total} finding{c.total===1?"":"s"}</span>}
                 {c.total===0 && c.covered===true && <span style={{fontSize:12,color:"#3fb950"}}>clear</span>}
                 {c.total===0 && c.covered===false && <span style={{fontSize:12,color:"#8b949e"}} title="NVD has no CVE records for this product">no NVD coverage</span>}
                 {c.total===0 && (c.covered===null||c.covered===undefined) && <span style={{fontSize:12,color:"#6e7681"}}>{c.version?"not scanned":"no version"}</span>}
