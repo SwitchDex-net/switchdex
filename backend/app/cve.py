@@ -37,9 +37,9 @@ NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 #   part: 'o' (OS), 'a' (application), 'h' (hardware)
 _CPE_MAP = [
     # (predicate over (vendor_lc, platform_lc, os_lc), (part, cpe_vendor, cpe_product))
-    # Cisco IOS / IOS-XE — the os string distinguishes them.
-    (lambda v, p, o: "cisco" in v and "xe" in o,           ("o", "cisco", "ios_xe")),
-    (lambda v, p, o: "cisco" in v and "nx-os" in o,        ("o", "cisco", "nx-os")),
+    # Cisco IOS-XE vs classic IOS vs NX-OS.
+    (lambda v, p, o: "cisco" in v and (p == "iosxe" or "ios-xe" in o or "ios xe" in o), ("o", "cisco", "ios_xe")),
+    (lambda v, p, o: "cisco" in v and ("nx-os" in o or "nxos" in p),  ("o", "cisco", "nx-os")),
     (lambda v, p, o: "cisco" in v,                         ("o", "cisco", "ios")),
     # OPNsense / pfSense (classified as linux/freebsd by us).
     (lambda v, p, o: "opnsense" in o or "opnsense" in v,   ("o", "opnsense", "opnsense")),
@@ -275,15 +275,64 @@ def _parse_dt(s):
         return None
 
 
+# ─────────────────────────── per-CPE NVD query ─────────────────────────
+def _query_nvd_cpe(cpe: str, max_pages: int = 4) -> list:
+    """Query NVD directly for all CVEs affecting a specific CPE (any age).
+    Uses virtualMatchString so version-range applicability is handled by NVD.
+    Returns a list of {cve_id, severity, cvss_score, description, criteria}.
+    Synchronous (runs in a thread); resilient to NVD's rate limits/5xx."""
+    headers = _nvd_headers()
+    delay = 0.7 if headers else 6.5
+    page = 2000
+    idx = 0
+    out = []
+    while idx < max_pages * page:
+        params = {"virtualMatchString": cpe, "resultsPerPage": page, "startIndex": idx}
+        body = None
+        for attempt in range(4):
+            try:
+                r = requests.get(NVD_API, params=params, headers=headers, timeout=40)
+                if r.status_code == 200:
+                    body = r.json()
+                    break
+                log.warning("NVD %s (attempt %d) cpe=%s", r.status_code, attempt + 1, cpe)
+            except Exception as e:  # noqa: BLE001
+                log.warning("NVD request error (attempt %d): %s", attempt + 1, e)
+            time.sleep(delay * (attempt + 2))
+        if body is None:
+            break
+        vulns = body.get("vulnerabilities", [])
+        total = body.get("totalResults", 0)
+        for item in vulns:
+            cve = item.get("cve", {})
+            cid = cve.get("id")
+            if not cid:
+                continue
+            desc = ""
+            for d in cve.get("descriptions", []):
+                if d.get("lang") == "en":
+                    desc = d.get("value", "")
+                    break
+            score, sev = _severity_score(cve)
+            out.append({"cve_id": cid, "severity": sev, "cvss_score": score,
+                        "description": desc, "criteria": cpe})
+        idx += page
+        if idx >= total:
+            break
+        time.sleep(delay)
+    return out
+
+
 # ─────────────────────────── matching / scan ───────────────────────────
 async def scan_device(device_id: int) -> dict:
-    """Resolve the device's CPE, match it against the local CVE table, and
-    persist DeviceCve findings. Returns {ok, cpe, matched, by_severity}."""
+    """Resolve the device's CPE, query NVD for matching CVEs (any age), and
+    cache them as DeviceCve findings. Returns {ok, cpe, matched, by_severity}."""
+    import asyncio
     async with SessionLocal() as s:
         dev = await s.get(Device, device_id)
         if not dev:
             return {"ok": False, "error": "device not found"}
-        # use stored CPE if the user set one, else derive
+        # use stored CPE if the user set one, else derive and persist
         cpe = dev.cpe or derive_cpe(dev)
         if not dev.cpe and cpe:
             dev.cpe = cpe
@@ -293,44 +342,37 @@ async def scan_device(device_id: int) -> dict:
         return {"ok": True, "cpe": "", "matched": 0, "by_severity": {},
                 "note": "no CPE mapping for this device type — not scanned"}
 
+    # if the CPE has no concrete version (wildcard), NVD would return the whole
+    # product history — refuse rather than flood with false positives.
     parts = cpe.split(":")
-    dev_vendor = parts[3] if len(parts) > 3 else ""
-    dev_product = parts[4] if len(parts) > 4 else ""
-    dev_version = parts[5] if len(parts) > 5 else "*"
+    ver = parts[5] if len(parts) > 5 else "*"
+    if ver in ("*", "-", ""):
+        return {"ok": True, "cpe": cpe, "matched": 0, "by_severity": {},
+                "note": "no software version detected — cannot match precisely"}
 
-    matches = []
+    # query NVD off-thread (it's blocking + slow)
+    findings = await asyncio.to_thread(_query_nvd_cpe, cpe)
+
     async with SessionLocal() as s:
-        # candidate CVEs: cheap pre-filter on the JSON containing the product.
-        cves = (await s.execute(
-            select(Cve).where(Cve.cpe_json.contains(f":{dev_vendor}:{dev_product}:"))
-        )).scalars().all()
-
-        for cve in cves:
-            try:
-                nodes = json.loads(cve.cpe_json)
-            except Exception:  # noqa: BLE001
-                continue
-            for n in nodes:
-                cparts = n["criteria"].split(":")
-                if len(cparts) < 6:
-                    continue
-                if cparts[3] != dev_vendor or cparts[4] != dev_product:
-                    continue
-                if _in_range(dev_version, n):
-                    matches.append((cve, n["criteria"]))
-                    break
-
-        # rewrite findings for this device
         await s.execute(delete(DeviceCve).where(DeviceCve.device_id == device_id))
         by_sev = {}
-        for cve, crit in matches:
-            by_sev[cve.severity] = by_sev.get(cve.severity, 0) + 1
-            s.add(DeviceCve(device_id=device_id, cve_id=cve.cve_id,
-                            severity=cve.severity, cvss_score=cve.cvss_score,
-                            matched_cpe=crit))
+        for f in findings:
+            sev = f["severity"] or ""
+            by_sev[sev] = by_sev.get(sev, 0) + 1
+            s.add(DeviceCve(device_id=device_id, cve_id=f["cve_id"], severity=sev,
+                            cvss_score=f["cvss_score"], matched_cpe=f["criteria"]))
+            # also cache the CVE detail so device_findings can show description/links
+            existing = await s.get(Cve, f["cve_id"])
+            if existing:
+                existing.description = f["description"][:4000]
+                existing.cvss_score = f["cvss_score"]
+                existing.severity = sev
+            else:
+                s.add(Cve(cve_id=f["cve_id"], description=f["description"][:4000],
+                          cvss_score=f["cvss_score"], severity=sev, cpe_json="[]"))
         await s.commit()
 
-    return {"ok": True, "cpe": cpe, "matched": len(matches), "by_severity": by_sev}
+    return {"ok": True, "cpe": cpe, "matched": len(findings), "by_severity": by_sev}
 
 
 async def scan_fleet() -> dict:

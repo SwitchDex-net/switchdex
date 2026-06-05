@@ -2632,7 +2632,7 @@ function SecurityView({auth, devices, onOpenDevice}) {
   }
   function syncNvd(){
     setBusy("sync"); setMsg("Pulling latest CVEs from NVD — this can take a few minutes…");
-    api.securitySync(false).then(r=>{ setMsg(`Synced ${r.sync?.stored||0} CVEs · ${r.scan?.total_findings||0} findings`); load(); })
+    api.securitySync(false).then(r=>{ setMsg(`Scan complete — ${r.scan?.total_findings||0} findings across ${r.scan?.devices||0} devices`); load(); })
       .catch(e=>setMsg("Sync failed: "+e.message)).finally(()=>setBusy(""));
   }
 
@@ -2679,7 +2679,7 @@ function SecurityView({auth, devices, onOpenDevice}) {
         <div className="fkpi"><div className="fkpi-label">Critical</div><div className="fkpi-val" style={{color:t.critical?"#f85149":"#e6edf3"}}>{t.critical||0}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>across fleet</div></div>
         <div className="fkpi"><div className="fkpi-label">High</div><div className="fkpi-val" style={{color:t.high?"#e3b341":"#e6edf3"}}>{t.high||0}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>across fleet</div></div>
         <div className="fkpi"><div className="fkpi-label">Total findings</div><div className="fkpi-val">{t.total||0}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>all severities</div></div>
-        <div className="fkpi"><div className="fkpi-label">CVE database</div><div className="fkpi-val">{dbCount.toLocaleString()}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>{data.cve_db?.newest?`newest ${tsAgo(Date.parse(data.cve_db.newest))}`:"not synced yet"}</div></div>
+        <div className="fkpi"><div className="fkpi-label">CVEs cached</div><div className="fkpi-val">{dbCount.toLocaleString()}</div><div className="fkpi-sub" style={{color:"#8b949e"}}>from matched findings</div></div>
       </div>
 
       <div className="sched-bar">
@@ -2689,7 +2689,7 @@ function SecurityView({auth, devices, onOpenDevice}) {
           <div className="sched-sub">Daily CVE sync + match against device software versions (exact CPE). {msg && <span style={{color:msg.includes("fail")?"#f85149":"#3fb950",marginLeft:4}}>{msg}</span>}</div>
         </div>
         {isAdmin && <button className="cfg-btn" onClick={rescan} disabled={!!busy}>{busy==="scan"?<><span style={{display:"inline-flex",animation:"sdx-spin 0.7s linear infinite"}}>{IC.clock}</span> Scanning…</>:<>{IC.refresh} Re-scan</>}</button>}
-        {isAdmin && <button className="cfg-btn primary" onClick={syncNvd} disabled={!!busy}>{busy==="sync"?<><span style={{display:"inline-flex",animation:"sdx-spin 0.7s linear infinite"}}>{IC.clock}</span> Syncing…</>:<>{IC.download} Sync NVD now</>}</button>}
+        {isAdmin && <button className="cfg-btn primary" onClick={syncNvd} disabled={!!busy}>{busy==="sync"?<><span style={{display:"inline-flex",animation:"sdx-spin 0.7s linear infinite"}}>{IC.clock}</span> Querying NVD…</>:<>{IC.download} Query NVD now</>}</button>}
       </div>
 
       <div className="fleet-tbl-card">

@@ -847,9 +847,15 @@ def _snmp_sysdescr(ip, community, version="2c"):
 
 def _classify(sysdescr, ip):
     s = sysdescr.lower()
+    # IOS-XE identifies itself either as "ios-xe" or by a release-train name
+    # (Gibraltar/Fuji/Everest/Amsterdam/Bengaluru/Dublin/Cupertino...) in the
+    # IOS sysDescr. Distinguishing it matters for CPE (cisco:ios_xe vs cisco:ios).
+    _XE_TRAINS = ("ios-xe", "ios xe", "gibraltar", "fuji", "everest", "amsterdam",
+                  "bengaluru", "dublin", "cupertino", "denali")
     table = [
-        ("arista", ("Arista", "eos")), ("cisco ios-xe", ("Cisco", "ios")),
-        ("cisco nx-os", ("Cisco", "nxos_ssh")), ("cisco", ("Cisco", "ios")),
+        ("arista", ("Arista", "eos")),
+        ("cisco nx-os", ("Cisco", "nxos_ssh")),
+        ("cisco", ("Cisco", "ios")),   # may be promoted to ios_xe below
         ("juniper", ("Juniper", "junos")), ("sonic", ("SONiC", "sonic")),
         ("brocade", ("Brocade", "brocade")), ("foundry", ("Brocade", "brocade")),
         ("ruckus", ("Brocade", "brocade")), ("ironware", ("Brocade", "brocade")),
@@ -857,9 +863,12 @@ def _classify(sysdescr, ip):
     ]
     for key, (vendor, platform) in table:
         if key in s:
-            return {"vendor": vendor, "platform": platform, "model": "", "os": sysdescr[:60],
+            if vendor == "Cisco" and platform == "ios" and any(t in s for t in _XE_TRAINS):
+                platform = "iosxe"
+            # keep enough of sysDescr that the version string survives (column is 128)
+            return {"vendor": vendor, "platform": platform, "model": "", "os": sysdescr[:120],
                     "device_type": "switch", "reachable": True, "sysdescr": sysdescr}
-    return {"vendor": "Unknown", "platform": "ios", "model": "", "os": sysdescr[:60],
+    return {"vendor": "Unknown", "platform": "ios", "model": "", "os": sysdescr[:120],
             "device_type": "switch", "reachable": True, "sysdescr": sysdescr}
 
 

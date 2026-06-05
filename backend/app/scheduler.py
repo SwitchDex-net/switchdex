@@ -117,14 +117,14 @@ async def main():
     # daily telemetry maintenance: downsample raw -> hourly, prune old data
     sched.add_job(tel.maintain, CronTrigger(hour=3, minute=30))
 
-    async def cve_sync_scan():
+    async def cve_nightly_scan():
         try:
-            res = await scanner.sync_nvd()
             scan = await scanner.scan_fleet()
-            log.info("CVE sync: %s | scan: %s", res, scan)
+            log.info("nightly CVE scan: %s", scan)
         except Exception as e:  # noqa: BLE001
-            log.error("CVE sync/scan failed: %s", e)
-    sched.add_job(cve_sync_scan, CronTrigger(hour=4, minute=0))   # daily, off-peak
+            log.error("CVE scan failed: %s", e)
+    sched.add_job(cve_nightly_scan,
+                  CronTrigger(hour=0, minute=0, timezone="America/Chicago"))
     sched.start()
     log.info("scheduler started — daily backup %02d:%02d, controller poll 5m, alert eval 60s, telemetry %ds",
              settings.backup_hour, settings.backup_minute, settings.metrics_interval)

@@ -47,11 +47,9 @@ async def scan_one(device_id: int):
 
 @router.post("/sync", dependencies=[Depends(require_admin)])
 async def sync_now(full: bool = False):
-    """Pull fresh CVEs from NVD now, then re-scan the fleet. `full=true` seeds a
-    larger initial window (slower)."""
-    res = await scanner.sync_nvd(full=full)
-    scan = await scanner.scan_fleet()
-    return {"sync": res, "scan": scan}
+    """Re-query NVD for every device's CPE and refresh cached findings.
+    (Per-CPE live query — finds CVEs of any age for the device's exact version.)"""
+    return {"scan": await scanner.scan_fleet()}
 
 
 class CpeIn(BaseModel):

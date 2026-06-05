@@ -12,6 +12,7 @@ asyncpg==0.30.0
 
 # ── Scheduling ──
 apscheduler==3.11.0
+tzdata>=2024.1            # bundles the IANA tz database so named zones (America/Chicago) resolve on slim images
 
 # ── Config archive (git-backed) ──
 GitPython==3.1.43
