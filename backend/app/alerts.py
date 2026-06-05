@@ -119,7 +119,6 @@ async def evaluate():
     async with SessionLocal() as s:
         rules = (await s.execute(select(AlertRule).where(AlertRule.enabled == True))).scalars().all()  # noqa: E712
         devices = (await s.execute(select(Device))).scalars().all()
-        channels = (await s.execute(select(NotifyChannel))).scalars().all()
         dev_by_id = {d.id: d for d in devices}
         metrics = await _latest_metrics(s)
 
@@ -151,18 +150,19 @@ async def evaluate():
                               detail=detail, state="open", opened_at=now)
                 s.add(alert)
                 await s.commit()
-                await notify.dispatch(channels, {
-                    "severity": rule.severity, "title": alert.title, "detail": detail,
-                    "device": dev.name, "time": now.isoformat() + "Z",
-                })
                 log.info("ALERT opened: %s", alert.title)
 
                 # ── feed the automation engine ──
+                # Notifications are no longer sent directly from the alert engine;
+                # an automation with trigger "an alert fires" (or a specific event
+                # below) is now the notification path, so routing lives with the
+                # automation that picks the destination channels.
                 try:
                     from . import automations as autoeng
                     preset = rule.preset or ""
                     ctx = {"device_id": dev.id, "device_name": dev.name,
-                           "title": alert.title, "severity": rule.severity}
+                           "title": alert.title, "severity": rule.severity,
+                           "rule_id": rule.id, "rule_name": rule.name}
                     # always emit the generic alert_fired event
                     await autoeng.on_event("alert_fired", ctx)
                     # plus specific events automations can target directly
@@ -216,7 +216,6 @@ async def raise_config_changed(device_id: int, device_name: str, detail: str):
         )).scalar_one_or_none()
         if not rule:
             return
-        channels = (await s.execute(select(NotifyChannel))).scalars().all()
         now = dt.datetime.utcnow()
         key = _dedup(rule.id, device_id, now.strftime("%Y%m%d%H%M%S"))
         alert = Alert(rule_id=rule.id, device_id=device_id, dedup_key=key,
@@ -224,9 +223,7 @@ async def raise_config_changed(device_id: int, device_name: str, detail: str):
                       detail=detail, state="open", opened_at=now)
         s.add(alert)
         await s.commit()
-        await notify.dispatch(channels, {
-            "severity": rule.severity, "title": alert.title, "detail": detail,
-            "device": device_name, "time": now.isoformat() + "Z"})
+        # notifications now flow via automations ("config drift" trigger)
         try:
             from . import automations as autoeng
             await autoeng.on_event("config_drift",

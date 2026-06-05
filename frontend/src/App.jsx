@@ -473,6 +473,9 @@ tbody tr:hover .row-acts{opacity:1;}
 .auto-danger{border-color:#5c2626;}
 .auto-armed-warn{background:#2d1212;border:1px solid #5c2626;color:#f0a3a3;border-radius:6px;padding:8px 10px;font-size:12px;margin-top:10px;}
 .auto-preview{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:10px;font-size:12px;color:#c9d1d9;white-space:pre-wrap;overflow-x:auto;font-family:'IBM Plex Mono',monospace;}
+.auto-chan-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:4px;}
+.auto-chan{display:flex;align-items:center;gap:8px;font-size:13px;padding:8px 10px;background:#161b22;border:1px solid #21262d;border-radius:6px;cursor:pointer;}
+.auto-chan.on{border-color:#1f6feb;background:#0d1f3a;}
 @media (max-width:900px){.dash-kpis{grid-template-columns:repeat(2,1fr);}.dash-cols,.dash-cards{grid-template-columns:1fr;}}
 .fr-name{font-weight:500;color:#e6edf3;font-size:13px;}
 .fr-meta{font-size:11px;color:#8b949e;font-family:'IBM Plex Mono',monospace;}
@@ -3133,9 +3136,14 @@ function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
   const [a, setA] = useState(initial ? {...blank, ...initial, trigger:{...initial.trigger}, action:{...initial.action}, scope:{...initial.scope}} : blank);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [channels, setChannels] = useState([]);
+  const [rules, setRules] = useState([]);
+  useEffect(()=>{ if(!MOCK_MODE){ api.listChannels().then(setChannels).catch(()=>setChannels([])); api.listRules().then(setRules).catch(()=>setRules([])); } }, []);
   const set = (k,v)=>setA(p=>({...p,[k]:v}));
   const setT = (k,v)=>setA(p=>({...p,trigger:{...p.trigger,[k]:v}}));
   const setAct = (k,v)=>setA(p=>({...p,action:{...p.action,[k]:v}}));
+  const toggleChannel = (id)=>setA(p=>{ const cur=new Set(p.action.channel_ids||[]); cur.has(id)?cur.delete(id):cur.add(id); return {...p,action:{...p.action,channel_ids:[...cur]}}; });
+  const toggleRule = (id)=>setA(p=>{ const cur=new Set(p.trigger.rule_ids||[]); cur.has(id)?cur.delete(id):cur.add(id); return {...p,trigger:{...p.trigger,rule_ids:[...cur]}}; });
   const isRemed = REMEDIATION_SET.has(a.action_type);
 
   function save(){
@@ -3203,6 +3211,25 @@ function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
               <option value="high">High and above</option><option value="critical">Critical only</option><option value="medium">Medium and above</option>
             </select>
           </>)}
+          {a.trigger.event==="alert_fired" && (<>
+            <label className="auto-lbl">Which alert rules</label>
+            {rules.length===0 ? (
+              <div className="auto-hint">No alert rules found. Manage them in the Alerts view.</div>
+            ) : (
+              <div className="auto-chan-grid">
+                {rules.map(r=>{
+                  const on = (a.trigger.rule_ids||[]).includes(r.id);
+                  return (
+                    <label key={r.id} className={`auto-chan ${on?"on":""}`}>
+                      <input type="checkbox" checked={on} onChange={()=>toggleRule(r.id)}/>
+                      <span>{r.name}{r.enabled===false?" (off)":""}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <div className="auto-hint">{(a.trigger.rule_ids||[]).length===0 ? "No rules selected — fires for any alert." : `Fires only for ${(a.trigger.rule_ids||[]).length} selected rule(s).`}</div>
+          </>)}
         </>) : (<>
           <label className="auto-lbl">Cron expression (UTC)</label>
           <input className="set-input" value={a.trigger.cron||""} onChange={e=>setT("cron",e.target.value)} placeholder="0 2 * * *  (daily at 02:00)"/>
@@ -3240,6 +3267,25 @@ function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
           <input className="set-input" value={a.action.title||""} onChange={e=>setAct("title",e.target.value)} placeholder="message title"/>
           <label className="auto-lbl">Message</label>
           <input className="set-input" value={a.action.message||""} onChange={e=>setAct("message",e.target.value)}/>
+        </>)}
+        {a.action_type==="notify" && (<>
+          <label className="auto-lbl">Send to channels</label>
+          {channels.length===0 ? (
+            <div className="auto-hint">No notification channels configured. Add them in Settings → Notifications first.</div>
+          ) : (
+            <div className="auto-chan-grid">
+              {channels.map(c=>{
+                const on = (a.action.channel_ids||[]).includes(c.id);
+                return (
+                  <label key={c.id} className={`auto-chan ${on?"on":""}`}>
+                    <input type="checkbox" checked={on} onChange={()=>toggleChannel(c.id)}/>
+                    <span><span style={{textTransform:"uppercase",fontSize:10,color:"#8b949e"}}>{c.kind}</span> {c.name}{c.enabled?"":" (off)"}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          <div className="auto-hint">{(a.action.channel_ids||[]).length===0 ? "No channels selected — will send to all enabled channels." : `Sends to ${(a.action.channel_ids||[]).length} selected channel(s).`}</div>
         </>)}
         {a.action_type==="push_config" && (<>
           <label className="auto-lbl">Config snippet</label>
@@ -3889,8 +3935,8 @@ const SEED_RULES = [
   { id:4, name:"Config changed", preset:"config_changed", severity:"info", duration:0, threshold:0, enabled:true, auto_resolve:false },
 ];
 const SEED_CHANNELS = [
-  { id:1, name:"NetOps email", kind:"email", enabled:true, min_severity:"warning", config:{to:"netops@example.com"} },
-  { id:2, name:"Slack #alerts", kind:"webhook", enabled:true, min_severity:"warning", config:{url:"https://hooks.slack.com/…"} },
+  { id:1, name:"NetOps email", kind:"email", enabled:true, config:{to:"netops@example.com"} },
+  { id:2, name:"Slack #alerts", kind:"webhook", enabled:true, config:{url:"https://hooks.slack.com/…"} },
 ];
 
 function alertAgo(iso){ const s=(Date.now()-new Date(iso).getTime())/1000; if(s<60)return"just now"; if(s<3600)return`${(s/60)|0}m ago`; if(s<86400)return`${(s/3600)|0}h ago`; return`${(s/86400)|0}d ago`; }
@@ -3966,7 +4012,7 @@ function ChannelEditor({chan, onSave, onClose}) {
 
   function test(){
     setTestMsg({t:"...",ok:null});
-    api.testChannel({name:c.name||"test",kind:c.kind,enabled:true,config:c.config,min_severity:c.min_severity||"warning"})
+    api.testChannel({name:c.name||"test",kind:c.kind,enabled:true,config:c.config})
       .then(res=>setTestMsg({t:res.ok?"Test sent successfully":(res.error||"Test failed"),ok:res.ok}))
       .catch(e=>setTestMsg({t:e.message||"Test failed",ok:false}));
   }
@@ -4012,10 +4058,6 @@ function ChannelEditor({chan, onSave, onClose}) {
             </div>
           </>}
 
-          <label className="flabel">Notify for severity ≥</label>
-          <select className="finput" value={c.min_severity||"warning"} onChange={e=>set("min_severity",e.target.value)}>
-            <option value="critical">Critical only</option><option value="warning">Warning and above</option><option value="info">All (info and above)</option>
-          </select>
           <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"#e6edf3",marginTop:4,cursor:"pointer"}}>
             <input type="checkbox" checked={c.enabled!==false} onChange={e=>set("enabled",e.target.checked)}/> Enabled
           </label>
@@ -4511,7 +4553,7 @@ function SettingsView({auth}) {
   function reloadChannels(){ if(!MOCK_MODE) api.listChannels().then(setChannels).catch(()=>{}); }
   useEffect(()=>{ reloadChannels(); }, []);
   function saveChan(c){
-    const body = {name:c.name, kind:c.kind, min_severity:c.min_severity, enabled:c.enabled, config:c.config||{}};
+    const body = {name:c.name, kind:c.kind, enabled:c.enabled, config:c.config||{}};
     const p = c.id ? api.updateChannel(c.id, body) : api.addChannel(body);
     p.then(()=>{ setEditChan(null); reloadChannels(); }).catch(e=>alert("Save failed: "+e.message));
   }
@@ -4660,7 +4702,7 @@ function SettingsView({auth}) {
                 <span className="chan-kind">{c.kind}</span>
                 <div className="al-body" style={{cursor:isAdmin?"pointer":"default"}} onClick={()=>isAdmin&&setEditChan(c)}>
                   <div className="al-title">{c.name}</div>
-                  <div className="al-detail">{c.config?.to||c.config?.url||c.config?.host||"configured"} · ≥ {c.min_severity}</div>
+                  <div className="al-detail">{c.config?.to||c.config?.url||c.config?.host||"configured"}</div>
                 </div>
                 <span className={`al-state ${c.enabled?"resolved":""}`} style={{background:c.enabled?undefined:"#21262d",color:c.enabled?undefined:"#8b949e"}}>{c.enabled?"enabled":"off"}</span>
                 {isAdmin && <button className="al-btn" onClick={()=>setEditChan(c)} title="Edit">{IC.edit}</button>}
@@ -4668,7 +4710,7 @@ function SettingsView({auth}) {
               </div>
             ))}
             {channels.length===0 && <div className="al-row"><span style={{color:"#8b949e",fontSize:13}}>No channels configured yet.</span></div>}
-            {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}} onClick={()=>setEditChan({kind:"webhook",min_severity:"warning",enabled:true,config:{}})}>{IC.plus} Add channel (email · webhook · syslog · Discord)</button></div>}
+            {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}} onClick={()=>setEditChan({kind:"webhook",enabled:true,config:{}})}>{IC.plus} Add channel (email · webhook · syslog · Discord)</button></div>}
           </div>
         </div>
       </>}

@@ -97,15 +97,18 @@ async def _run_action(auto, devices, session, dry_run):
         try:
             if act == "notify":
                 if dry_run:
-                    lines.append(f"[dry] would notify for {d.name}")
+                    chans = cfg.get("channel_ids") or []
+                    lines.append(f"[dry] would notify {len(chans) or 'all'} channel(s) for {d.name}")
                 else:
-                    channels = (await session.execute(select(NotifyChannel))).scalars().all()
-                    await notify.dispatch(channels, {
+                    all_ch = (await session.execute(select(NotifyChannel))).scalars().all()
+                    want = set(cfg.get("channel_ids") or [])
+                    chans = [c for c in all_ch if (not want) or (c.id in want)]
+                    await notify.dispatch(chans, {
                         "severity": cfg.get("severity", "info"),
                         "title": cfg.get("title", f"Automation: {auto.name}"),
                         "detail": cfg.get("message", "") or f"Triggered for {d.name}",
                         "device": d.name, "time": dt.datetime.utcnow().isoformat() + "Z"})
-                    lines.append(f"notified for {d.name}")
+                    lines.append(f"notified {len(chans)} channel(s) for {d.name}")
 
             elif act == "backup_config":
                 if dry_run:
@@ -301,6 +304,12 @@ def _event_matches(event, tj, context):
         min_sev = (tj.get("min_severity") or "high").lower()
         order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
         return order.get((context.get("severity") or "").lower(), -1) >= order.get(min_sev, 2)
+    if event == "alert_fired":
+        # optional filter: only specific alert rules. Empty/absent = any rule.
+        rule_ids = tj.get("rule_ids") or []
+        if rule_ids:
+            return context.get("rule_id") in rule_ids
+        return True
     return True
 
 

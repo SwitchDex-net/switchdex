@@ -16,12 +16,12 @@ SEVERITY_COLOR = {"info": 0x3B82F6, "warning": 0xE3B341, "critical": 0xF85149}
 
 
 async def dispatch(channels, alert: dict):
-    """Send one alert to every enabled channel that meets the severity floor."""
-    rank = SEVERITY_RANK.get(alert["severity"], 1)
+    """Send one alert to every enabled channel in `channels`. Severity-based
+    routing is no longer done here — callers (now the automation engine) decide
+    which channels to pass in, so routing lives with the automation that knows
+    the context."""
     for ch in channels:
         if not ch.enabled:
-            continue
-        if SEVERITY_RANK.get(ch.min_severity, 1) > rank:
             continue
         try:
             cfg = json.loads(ch.config_json or "{}")

@@ -128,7 +128,6 @@ class ChannelIn(BaseModel):
     kind: str                 # email|webhook|syslog|discord
     enabled: bool = True
     config: dict = {}
-    min_severity: str = "warning"
 
 
 def _chan_out(c: NotifyChannel):
@@ -141,7 +140,7 @@ def _chan_out(c: NotifyChannel):
         if cfg.get(secret):
             cfg[secret] = "********"
     return {"id": c.id, "name": c.name, "kind": c.kind, "enabled": c.enabled,
-            "config": cfg, "min_severity": c.min_severity}
+            "config": cfg}
 
 
 @router.get("/channels")
@@ -154,7 +153,7 @@ async def list_channels(_: dict = Depends(get_current_user)):
 async def create_channel(body: ChannelIn):
     async with SessionLocal() as s:
         c = NotifyChannel(name=body.name, kind=body.kind, enabled=body.enabled,
-                          config_json=json.dumps(body.config), min_severity=body.min_severity)
+                          config_json=json.dumps(body.config))
         s.add(c); await s.commit(); await s.refresh(c)
         return _chan_out(c)
 
@@ -175,7 +174,7 @@ async def update_channel(cid: int, body: ChannelIn):
             if cfg.get(secret) == "********":
                 cfg[secret] = old.get(secret, "")
         c.name = body.name; c.kind = body.kind; c.enabled = body.enabled
-        c.config_json = json.dumps(cfg); c.min_severity = body.min_severity
+        c.config_json = json.dumps(cfg)
         await s.commit()
         return _chan_out(c)
 
