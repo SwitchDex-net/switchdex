@@ -99,6 +99,8 @@ const api = {
   securityScan: () => _req("/security/scan", { method: "POST" }),
   securityScanDevice: (id) => _req(`/security/devices/${id}/scan`, { method: "POST" }),
   securitySync: (full=false) => _req(`/security/sync?full=${full}`, { method: "POST", timeoutMs: 30000 }),
+  getNvdKey: () => _req("/security/nvd-key"),
+  setNvdKey: (key) => _req("/security/nvd-key", { method: "PUT", body: { key } }),
   securityScanStatus: () => _req("/security/scan-status"),
   setDeviceCpe: (id, cpe) => _req(`/security/devices/${id}/cpe`, { method: "PUT", body: {cpe} }),
   metric: (id, metric, range="24h", label="") => _req(`/metrics/devices/${id}?metric=${metric}&range=${range}${label?`&label=${encodeURIComponent(label)}`:""}`),
@@ -4230,6 +4232,18 @@ function SettingsView({auth}) {
     user_filter: "", admin_group_dn: "",
   });
   const [testResult, setTestResult] = useState(null);
+  const [nvd, setNvd] = useState(null);        // {configured, source, masked}
+  const [nvdInput, setNvdInput] = useState("");
+  const [nvdSaving, setNvdSaving] = useState(false);
+  const [nvdMsg, setNvdMsg] = useState(null);
+  useEffect(()=>{ if(!MOCK_MODE) api.getNvdKey().then(setNvd).catch(()=>setNvd({configured:false})); }, []);
+  function saveNvd(){
+    setNvdSaving(true); setNvdMsg(null);
+    api.setNvdKey(nvdInput.trim()).then(r=>{
+      setNvd({configured:r.configured, source:"ui", masked:r.masked});
+      setNvdInput(""); setNvdMsg(r.configured?"Key saved — scans will use it immediately.":"Key cleared.");
+    }).catch(e=>setNvdMsg("Save failed: "+e.message)).finally(()=>setNvdSaving(false));
+  }
   const isAdmin = auth.user.role === "admin";
 
   function addUser() {
@@ -4260,6 +4274,7 @@ function SettingsView({auth}) {
       <div style={{display:"flex",gap:8,marginBottom:18}}>
         <button className={`fbtn ${tab==="users"?"on":""}`} onClick={()=>setTab("users")}>Local users</button>
         <button className={`fbtn ${tab==="ldap"?"on":""}`} onClick={()=>setTab("ldap")}>LDAP / Active Directory</button>
+        <button className={`fbtn ${tab==="integrations"?"on":""}`} onClick={()=>setTab("integrations")}>API keys</button>
       </div>
 
       {tab==="users" && <>
@@ -4340,6 +4355,26 @@ function SettingsView({auth}) {
             <button className="set-btn primary" onClick={()=>setTestResult({ok:true,msg:"Settings saved (simulated)"})}>Save LDAP settings</button>
           </div>
           {testResult && <div className={`test-result ${testResult.ok?"ok":"fail"}`}>{testResult.msg}</div>}
+        </div>
+      </>}
+
+      {tab==="integrations" && <>
+        <div className="set-section">
+          <div className="set-h">NVD API key</div>
+          <div className="set-desc">A free key from the NIST National Vulnerability Database speeds up vulnerability scans roughly 10× (≈0.6s vs 6s per request). Request one at <span style={{color:"#58a6ff"}}>nvd.nist.gov/developers/request-an-api-key</span>. Stored on the appliance and applied to scans immediately — no restart needed.</div>
+          <div style={{margin:"10px 0",fontSize:13}}>
+            {nvd===null ? <span style={{color:"#8b949e"}}>Loading…</span> :
+             nvd.configured ? <span style={{color:"#3fb950"}}>✓ Key configured <span style={{color:"#6e7681"}}>({nvd.masked}{nvd.source==="env"?", from .env":""})</span></span> :
+             <span style={{color:"#e3b341"}}>No key set — scans work but are slower and may hit NVD rate limits.</span>}
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",maxWidth:520}}>
+            <input className="set-input" type="password" placeholder="Paste NVD API key" value={nvdInput}
+              onChange={e=>setNvdInput(e.target.value)} style={{flex:1}} autoComplete="off"/>
+            <button className="set-btn primary" onClick={saveNvd} disabled={nvdSaving||!nvdInput.trim()}>{nvdSaving?"Saving…":"Save key"}</button>
+            {nvd?.configured && nvd.source==="ui" && <button className="set-btn" onClick={()=>{setNvdInput("");api.setNvdKey("").then(()=>{setNvd({configured:false});setNvdMsg("Key cleared.");});}}>Clear</button>}
+          </div>
+          {nvdMsg && <div className="test-result ok" style={{marginTop:10}}>{nvdMsg}</div>}
+          <div className="set-desc" style={{marginTop:10,fontSize:12,color:"#6e7681"}}>The key is write-only here — it's never displayed back in full. A key set via <code>.env</code> still works; a key saved here takes precedence.</div>
         </div>
       </>}
     </div>

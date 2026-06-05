@@ -63,6 +63,13 @@ async def lifespan(app: FastAPI):
             for i in ids:
                 await store.backup_device(i, trigger="manual", user="seed")
         await alert_engine.seed_default_rules()
+
+        # ── prime UI-saved NVD API key (survives restarts) ──
+        from .db import Setting
+        from . import cve as _cve
+        nvd_row = await s.get(Setting, "nvd_api_key")
+        if nvd_row and nvd_row.value:
+            _cve.set_nvd_key_override(nvd_row.value)
     yield
 
 

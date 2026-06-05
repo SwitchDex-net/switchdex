@@ -13,7 +13,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/
 ```
 
 You'll be prompted for container ID, hostname, cores/RAM/disk, network bridge,
-and DHCP-vs-static. Defaults (2 cores / 4 GB / 8 GB disk) suit up to ~150
+and DHCP-vs-static. Defaults (2 cores / 4 GB / 40 GB disk) suit up to ~150
 devices. The script then:
 
 1. Downloads a Debian 12 LXC template if needed.

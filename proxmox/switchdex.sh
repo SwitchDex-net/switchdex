@@ -45,7 +45,7 @@ header
 
 # ── defaults (overridable by prompts) ───────────────────────────────────────
 DEFAULT_HOSTNAME="switchdex"
-DEFAULT_DISK="8"        # GB
+DEFAULT_DISK="40"      # GB — telemetry/config history + Docker images; matches docs
 DEFAULT_CPU="2"
 DEFAULT_RAM="4096"      # MB
 DEFAULT_BRIDGE="vmbr0"

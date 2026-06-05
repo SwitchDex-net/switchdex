@@ -151,8 +151,21 @@ def _in_range(ver: str, node: dict) -> bool:
 
 
 # ─────────────────────────── NVD sync ──────────────────────────────────
+# Runtime override for the NVD key, settable from the UI (Settings) and cached
+# here so the threaded NVD calls can read it without an async DB hop. Primed
+# from the DB at startup and updated when an admin saves a new key.
+_NVD_KEY_OVERRIDE = None   # None = not set via UI; "" or value once loaded
+
+
+def set_nvd_key_override(key: str):
+    global _NVD_KEY_OVERRIDE
+    _NVD_KEY_OVERRIDE = key or ""
+
+
 def _nvd_headers():
-    key = os.environ.get("NVD_API_KEY", "") or getattr(settings, "nvd_api_key", "")
+    # priority: UI-set key (DB) → environment → settings default
+    key = _NVD_KEY_OVERRIDE if _NVD_KEY_OVERRIDE else (
+        os.environ.get("NVD_API_KEY", "") or getattr(settings, "nvd_api_key", ""))
     return {"apiKey": key} if key else {}
 
 

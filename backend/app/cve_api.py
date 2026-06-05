@@ -5,7 +5,7 @@ import json
 
 from . import cve as scanner
 from .auth import get_current_user, require_admin
-from .db import SessionLocal, Device, Cve
+from .db import SessionLocal, Device, Cve, Setting
 from sqlalchemy import select, func
 
 router = APIRouter(prefix="/api/security", tags=["security"])
@@ -118,3 +118,50 @@ async def set_cpe(device_id: int, body: CpeIn):
         dev.cpe = body.cpe.strip()
         await s.commit()
     return await scanner.scan_device(device_id)
+
+# ─────────────────────── NVD API key (UI-managed) ──────────────────────
+_NVD_KEY_SETTING = "nvd_api_key"
+
+
+class NvdKey(BaseModel):
+    key: str
+
+
+def _mask(k: str) -> str:
+    if not k:
+        return ""
+    if len(k) <= 8:
+        return "••••"
+    return k[:4] + "••••" + k[-4:]
+
+
+@router.get("/nvd-key")
+async def get_nvd_key(_: dict = Depends(get_current_user)):
+    """Report whether an NVD key is configured (masked) and its source.
+    Never returns the raw key."""
+    import os
+    async with SessionLocal() as s:
+        row = await s.get(Setting, _NVD_KEY_SETTING)
+    db_key = (row.value if row else "") or ""
+    env_key = os.environ.get("NVD_API_KEY", "")
+    if db_key:
+        return {"configured": True, "source": "ui", "masked": _mask(db_key)}
+    if env_key:
+        return {"configured": True, "source": "env", "masked": _mask(env_key)}
+    return {"configured": False, "source": None, "masked": ""}
+
+
+@router.put("/nvd-key", dependencies=[Depends(require_admin)])
+async def set_nvd_key(body: NvdKey):
+    """Save (or clear) the NVD API key. Stored in the DB and applied live so
+    scans use it immediately — no backend restart or .env edit needed."""
+    key = (body.key or "").strip()
+    async with SessionLocal() as s:
+        row = await s.get(Setting, _NVD_KEY_SETTING)
+        if row:
+            row.value = key
+        else:
+            s.add(Setting(key=_NVD_KEY_SETTING, value=key))
+        await s.commit()
+    scanner.set_nvd_key_override(key)   # apply immediately to running scans
+    return {"ok": True, "configured": bool(key), "masked": _mask(key)}
