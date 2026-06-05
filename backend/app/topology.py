@@ -24,6 +24,14 @@ async def get_topology(_: dict = Depends(get_current_user)):
         devices = (await s.execute(select(Device))).scalars().all()
 
     by_ip = {d.ip: d for d in devices}
+    # also index by name/hostname (lowercased) — some devices advertise an LLDP
+    # management IP that differs from the IP we know them by (e.g. a firewall
+    # advertising its WAN IP), so fall back to matching the advertised sysName.
+    by_name = {}
+    for d in devices:
+        for key in (d.name, getattr(d, "hostname", None)):
+            if key:
+                by_name[key.strip().lower()] = d
     nodes = [{
         "id": d.id, "name": d.name, "ip": d.ip, "type": d.device_type,
         "vendor": d.vendor, "status": d.status, "role": d.role,
@@ -47,6 +55,11 @@ async def get_topology(_: dict = Depends(get_current_user)):
             for nb in neighbors:
                 peer = by_ip.get(nb.get("peer_ip"))
                 if not peer:
+                    # fall back to the advertised LLDP system name
+                    pname = (nb.get("peer_name") or "").strip().lower()
+                    if pname:
+                        peer = by_name.get(pname)
+                if not peer or peer.id == d.id:
                     continue
                 key = tuple(sorted((d.id, peer.id)))
                 if key in seen:
