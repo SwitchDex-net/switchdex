@@ -229,6 +229,19 @@ async def list_versions(device_id: int):
         } for v in rows]
 
 
+# NOTE: this literal "/diff" route MUST be declared before the
+# "/configs/{version_id}" route below — FastAPI matches in declaration order, and
+# otherwise "diff" gets captured as version_id and fails to parse as int (422).
+@router.get("/devices/{device_id}/configs/diff")
+async def diff(device_id: int, a: int, b: int):
+    async with SessionLocal() as s:
+        va, vb, dev = await s.get(ConfigVersion, a), await s.get(ConfigVersion, b), await s.get(Device, device_id)
+        if not (va and vb and dev):
+            raise HTTPException(404)
+        rel = store._device_path(dev)
+        return {"diff": store.diff_versions(va.commit_sha, vb.commit_sha, rel)}
+
+
 @router.get("/devices/{device_id}/configs/{version_id}")
 async def get_version(device_id: int, version_id: int):
     async with SessionLocal() as s:
@@ -248,16 +261,6 @@ async def backup_now(device_id: int):
         if d and d.capability == "readonly":
             raise HTTPException(409, "Device is read-only (controller-managed); config backup not available")
     return await store.backup_device(device_id, trigger="manual", user="api")
-
-
-@router.get("/devices/{device_id}/configs/diff")
-async def diff(device_id: int, a: int, b: int):
-    async with SessionLocal() as s:
-        va, vb, dev = await s.get(ConfigVersion, a), await s.get(ConfigVersion, b), await s.get(Device, device_id)
-        if not (va and vb and dev):
-            raise HTTPException(404)
-        rel = store._device_path(dev)
-        return {"diff": store.diff_versions(va.commit_sha, vb.commit_sha, rel)}
 
 
 @router.post("/devices/{device_id}/restore/{version_id}")

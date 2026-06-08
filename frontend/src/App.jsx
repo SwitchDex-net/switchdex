@@ -1166,7 +1166,7 @@ function isMgmt(n){ return /^management/i.test(n)||n==="me0"||n.toLowerCase().st
 function isFiber(spd){ return ["10G","25G","40G","100G"].includes(spd); }
 function portClass(i){ if(i.shutdown) return "admin"; if(i.status==="up") return "up"; return "down"; }
 
-function SwitchFaceplate({device, selIface, onSelect}) {
+function SwitchFaceplate({device, selIface, onSelect, onRefresh, refreshing}) {
   // Faceplate shows physical ports only. Logical interfaces (SVIs, loopbacks,
   // port-channels) are listed separately in the detail panel.
   const allEntries = Object.entries(device.interfaces || {});
@@ -1174,6 +1174,11 @@ function SwitchFaceplate({device, selIface, onSelect}) {
   if (entries.length === 0) {
     return <div className="faceplate" style={{padding:"24px",textAlign:"center",color:"#6e7681",fontSize:13}}>
       No physical interface data yet for {device.name}.<br/>Interface enumeration runs on the next poll, or trigger a backup to pull live config.
+      {onRefresh && <div style={{marginTop:14}}>
+        <button className="cfg-btn" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? <><span className="cfg-spin" style={{marginRight:6}}/>Polling…</> : <>↻ Refresh now</>}
+        </button>
+      </div>}
     </div>;
   }
   const mgmt = entries.filter(([n])=>isMgmt(n));
@@ -1225,7 +1230,8 @@ function SwitchFaceplate({device, selIface, onSelect}) {
 
 /* ───────────────────────── Interface Editor ────────────────────────── */
 function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
-  const orig = device.interfaces[ifaceName];
+  const orig = (device.interfaces || {})[ifaceName] || {};
+  const hasConfig = !!((device.interfaces || {})[ifaceName]);
   const [desc,setDesc]   = useState(orig.desc||"");
   const [mode,setMode]   = useState(orig.mode||"access");
   const [vlan,setVlan]   = useState(orig.vlan||"1");
@@ -1300,6 +1306,13 @@ function InterfaceEditor({device, ifaceName, onBack, onApply, onSSH}) {
         <div className="ed-title">{ifaceName}</div>
         <div className="dsub">{device.name} · {device.vendor} · {orig.speed}</div>
       </div>
+
+      {!hasConfig && (
+        <div className="cfg-banner err" style={{marginTop:12}}>{IC.warn}<span>
+          No enumerated configuration for this interface yet — fields below show defaults.
+          For accurate current values, open the Details tab and click “Refresh now” to poll the device first.
+        </span></div>
+      )}
 
       {ifMetrics && (ifMetrics.rx?.length || ifMetrics.tx?.length) ? (() => {
         const rx = (ifMetrics.rx||[]).map(p=>({t:p.t, v:+(p.v/1e6).toFixed(3)}));
@@ -1755,7 +1768,7 @@ function fmtBps(bps){
   return Math.round(n)+" bps";
 }
 
-function DeviceInterfaces({device}) {
+function DeviceInterfaces({device, canEdit, onEditInterface}) {
   const [data, setData] = useState(null);     // {interfaces: {name: {rx:[{t,v}], tx:[{t,v}]}}}
   const [range, setRange] = useState("6h");
   const [sel, setSel] = useState(null);        // selected interface name for chart
@@ -1795,6 +1808,11 @@ function DeviceInterfaces({device}) {
         <div className="ed-back" onClick={()=>setSel(null)}>{IC.back} All interfaces</div>
         <div style={{display:"flex",alignItems:"center",marginBottom:10}}>
           <div style={{fontWeight:600,fontSize:15,fontFamily:"'IBM Plex Mono',monospace"}}>{sel}</div>
+          {canEdit && onEditInterface && (
+            <button className="cfg-btn" style={{marginLeft:14}} onClick={()=>onEditInterface(sel)}>
+              {IC.edit} Edit configuration
+            </button>
+          )}
           <div className="seg" style={{marginLeft:"auto"}}>
             {["1h","6h","24h","7d"].map(r=>(
               <button key={r} className={`seg-btn ${range===r?"on":""}`} onClick={()=>setRange(r)}>{r}</button>
@@ -2474,6 +2492,19 @@ function AppInner({auth, onLogout}) {
       .catch(()=>{});
     return () => { alive = false; };
   }, [selId]);
+
+  // Manual on-demand re-enumeration (used by the faceplate refresh button).
+  const [ifRefreshing, setIfRefreshing] = useState(false);
+  function refreshInterfaces() {
+    if (!sel || MOCK_MODE) return;
+    setIfRefreshing(true);
+    api.deviceInterfaces(sel.id)
+      .then(ifs => { if (ifs && Object.keys(ifs).length) {
+        setDevices(p=>p.map(d=>d.id===sel.id?{...d, interfaces:ifs}:d));
+      }})
+      .catch(e=>alert("Refresh failed: "+e.message))
+      .finally(()=>setIfRefreshing(false));
+  }
   const filtered = devices.filter(d=>{
     const s=search.toLowerCase();
     return (d.name.toLowerCase().includes(s)||d.ip.includes(s)||d.vendor.toLowerCase().includes(s)||d.model.toLowerCase().includes(s))&&(filterStatus==="all"||d.status===filterStatus);
@@ -2668,7 +2699,7 @@ function AppInner({auth, onLogout}) {
 
                     <div>
                       <div className="sec-title">Front panel{ro?" — read-only view":" — click a port to configure"}</div>
-                      <SwitchFaceplate device={sel} selIface={selIface} onSelect={ro?(()=>{}):((n)=>setSelIface(n))}/>
+                      <SwitchFaceplate device={sel} selIface={selIface} onSelect={ro?(()=>{}):((n)=>setSelIface(n))} onRefresh={refreshInterfaces} refreshing={ifRefreshing}/>
                     </div>
 
                     {ro && (
@@ -2759,7 +2790,9 @@ function AppInner({auth, onLogout}) {
 
                 {tab==="alerts" && <DeviceAlerts key={sel.id} device={sel} auth={auth}/>}
 
-                {tab==="interfaces" && <DeviceInterfaces key={sel.id} device={sel}/>}
+                {tab==="interfaces" && <DeviceInterfaces key={sel.id} device={sel}
+                  canEdit={sel.capability!=="readonly"}
+                  onEditInterface={(name)=>{ setSelIface(name); setTab("detail"); }}/>}
 
                 {tab==="ssh" && <SSHPane key={sel.id} device={sel} onUpdate={updateDevice}/>}
               </>}
@@ -3064,6 +3097,13 @@ function AutomationsView({auth, devices}) {
   useEffect(()=>{ if(MOCK_MODE){setAutos([]);return;} reload(); }, []);
 
   function approve(runId, ok){ api.approveRun(runId, ok).then(()=>reload()); }
+  function toggleEnabled(a, e){
+    e.stopPropagation();
+    // the list object (_to_dict) carries every field AutomationIn needs, so a
+    // full spread with enabled flipped is a safe round-trip — nothing resets.
+    api.updateAutomation(a.id, {...a, enabled: !a.enabled})
+      .then(()=>reload()).catch(err=>alert("Could not toggle: "+err.message));
+  }
 
   if (autos===null) return <div className="content"><div className="fleet-wrap"><div className="cfg-loading"><span className="cfg-spin"/> Loading automations…</div></div></div>;
 
@@ -3116,6 +3156,11 @@ function AutomationsView({auth, devices}) {
                   </div>
                 </span>
                 <span style={{fontSize:12,color:"#6e7681"}}>{a.scope_type==="all"?"all devices":a.scope_type}</span>
+                {isAdmin && <button className="al-btn" title={a.enabled?"Disable":"Enable"}
+                  onClick={(e)=>toggleEnabled(a,e)}
+                  style={{marginLeft:10,minWidth:64,color:a.enabled?"#8b949e":"#3fb950"}}>
+                  {a.enabled?"Disable":"Enable"}
+                </button>}
               </div>
             ))}
           </div>
