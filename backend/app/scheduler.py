@@ -151,6 +151,7 @@ async def main():
     async def automation_tick():
         try:
             await autoeng.tick_scheduled()
+            await autoeng.tick_metric_thresholds()
         except Exception as e:  # noqa: BLE001
             log.error("automation tick failed: %s", e)
     sched.add_job(automation_tick, "interval", minutes=1)

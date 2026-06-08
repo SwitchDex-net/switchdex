@@ -400,3 +400,45 @@ async def tick_scheduled():
                 await fire(auto2, "scheduled run", s)
             except Exception:  # noqa: BLE001
                 continue
+
+
+async def tick_metric_thresholds():
+    """Called every minute by the scheduler. Evaluates each enabled event-driven
+    metric_threshold automation against the LATEST sampled metric for every device
+    in its scope, and fires when the condition holds. This is independent of the
+    alert engine — so a metric_threshold automation behaves exactly as its own
+    threshold says, whether or not a matching alert rule exists or has already
+    opened. Cooldown (in fire()) prevents repeated firing while the value stays
+    over the line."""
+    from .alerts import _latest_metrics
+    async with SessionLocal() as s:
+        autos = (await s.execute(
+            select(Automation).where(Automation.enabled == True,  # noqa: E712
+                                      Automation.trigger_type == "event"))).scalars().all()
+        autos = [a for a in autos if _trigger_event(a) == "metric_threshold"]
+        if not autos:
+            return
+        metrics = await _latest_metrics(s)
+        for auto in autos:
+            try:
+                tj = json.loads(auto.trigger_json or "{}")
+            except Exception:  # noqa: BLE001
+                continue
+            metric = tj.get("metric"); op = tj.get("op", ">"); thr = tj.get("value")
+            if metric is None or thr is None:
+                continue
+            scoped = await _resolve_scope(auto, s)
+            for d in scoped:
+                val = metrics.get(d.id, {}).get(metric)
+                if val is None or not _cmp(val, op, float(thr)):
+                    continue
+                summary = f"{metric}={round(val)} on {d.name}"
+                auto2 = await s.get(Automation, auto.id)
+                await fire(auto2, summary, s, trigger_device_id=d.id)
+
+
+def _trigger_event(auto):
+    try:
+        return json.loads(auto.trigger_json or "{}").get("event")
+    except Exception:  # noqa: BLE001
+        return None
