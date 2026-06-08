@@ -55,6 +55,10 @@ to how notifications are delivered — see **Breaking changes** below.
   than switches.
 - Proxmox installer default disk raised from 8 GB to 40 GB to match the metrics
   database footprint.
+- The Proxmox installer now offers an optional **root login** setup (set a root
+  password, and optionally enable root SSH). Both default to off — the container
+  root account stays locked and is administered from the Proxmox host via
+  `pct exec`, which remains the recommended posture.
 - Deployment sizing guidance reworked into a documented minimum spec plus
   recommended specs by fleet size.
 

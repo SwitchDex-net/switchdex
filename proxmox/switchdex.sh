@@ -80,6 +80,39 @@ STORAGE="$(pvesm status -content rootdir 2>/dev/null | awk 'NR==2{print $1}')"
 STORAGE="${STORAGE:-local-lvm}"
 read -rp "Storage pool [${STORAGE}]: " S; STORAGE="${S:-$STORAGE}"
 
+# ── root login (optional) ───────────────────────────────────────────────────
+# By default the container root account is locked — you administer it from the
+# Proxmox host with `pct exec`/`pct enter` (no password needed). Setting a root
+# password and/or enabling root SSH adds a credential and attack surface, so
+# both default to No.
+ROOT_PW=""
+ENABLE_ROOT_SSH="no"
+echo
+echo " Permit root login (set a root password)?"
+echo "   1) No  (locked root; administer via 'pct exec' from the host — recommended)"
+echo "   2) Yes (set a root password for console/SSH login)"
+read -rp " Choice [1]: " ROOTCHOICE; ROOTCHOICE="${ROOTCHOICE:-1}"
+if [ "$ROOTCHOICE" = "2" ]; then
+  while :; do
+    read -rsp "   Set root password: " PW1; echo
+    read -rsp "   Confirm root password: " PW2; echo
+    if [ -z "$PW1" ]; then
+      echo "   Password cannot be empty."
+    elif [ "$PW1" != "$PW2" ]; then
+      echo "   Passwords do not match — try again."
+    else
+      ROOT_PW="$PW1"; break
+    fi
+  done
+
+  echo
+  echo " Enable root login over SSH?"
+  echo "   1) No  (root password works on console only — recommended)"
+  echo "   2) Yes (install an SSH server and permit root login over the network)"
+  read -rp " Choice [1]: " SSHCHOICE; SSHCHOICE="${SSHCHOICE:-1}"
+  [ "$SSHCHOICE" = "2" ] && ENABLE_ROOT_SSH="yes"
+fi
+
 # ── fetch a Debian template if needed ───────────────────────────────────────
 info "Locating Debian 12 LXC template..."
 pveam update >/dev/null 2>&1 || true
@@ -108,6 +141,26 @@ pct create "$CTID" "$TEMPLATE_REF" \
 info "Starting container..."
 pct start "$CTID" >/dev/null
 sleep 5
+
+# ── apply optional root login / SSH choices ─────────────────────────────────
+if [ -n "$ROOT_PW" ]; then
+  info "Setting root password..."
+  # pipe to chpasswd inside the container; avoids the password on any arg list
+  printf 'root:%s\n' "$ROOT_PW" | pct exec "$CTID" -- chpasswd \
+    || die "Failed to set root password."
+  if [ "$ENABLE_ROOT_SSH" = "yes" ]; then
+    info "Installing SSH server and enabling root login over SSH..."
+    pct exec "$CTID" -- bash -c '
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq >/dev/null 2>&1
+      apt-get install -y -qq openssh-server >/dev/null 2>&1
+      mkdir -p /etc/ssh/sshd_config.d
+      printf "PermitRootLogin yes\nPasswordAuthentication yes\n" > /etc/ssh/sshd_config.d/10-switchdex-root.conf
+      systemctl enable ssh >/dev/null 2>&1 || systemctl enable sshd >/dev/null 2>&1 || true
+      systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+    ' || warn "SSH setup hit an issue — check manually with: pct exec $CTID -- systemctl status ssh"
+  fi
+fi
 
 # ── install everything inside the container ─────────────────────────────────
 info "Installing SwitchDex inside the container (this takes a few minutes)..."
@@ -174,6 +227,15 @@ echo -e " ${BL}Admin:${CL}  the bootstrap password is printed in the backend log
 echo -e "         ${YW}pct exec ${CTID} -- docker compose -f /opt/switchdex/docker-compose.yml logs backend | grep -A4 'bootstrap admin'${CL}"
 echo
 echo " Accept the self-signed certificate, then change the admin password on first login."
+if [ -n "$ROOT_PW" ]; then
+  if [ "$ENABLE_ROOT_SSH" = "yes" ]; then
+    echo -e " ${YW}Root login:${CL} password set; root SSH ENABLED — reachable over the network."
+  else
+    echo -e " ${BL}Root login:${CL} password set (console only; root SSH not enabled)."
+  fi
+else
+  echo -e " ${BL}Root login:${CL} locked — administer via 'pct exec ${CTID}' from this host."
+fi
 echo " Runs in real-device mode by default — add your devices in the UI."
 echo " (For a hardware-free demo: set SEED_DEMO_DEVICES=true and DEVICE_BACKEND=sim in"
 echo "  /opt/switchdex/.env, then: pct exec ${CTID} -- bash -c 'cd /opt/switchdex && docker compose up -d')"
