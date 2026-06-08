@@ -3,6 +3,27 @@
 All notable changes to SwitchDex are recorded here. Versions follow semantic
 versioning (MAJOR.MINOR.PATCH).
 
+## [2.0.2]
+
+### Fixed
+- **Config diff/compare always failed with a 422 "unable to parse string as an
+  integer."** The `/configs/diff` route was declared after `/configs/{version_id}`,
+  so FastAPI matched "diff" as a version id and tried to parse it as an int. Moved
+  the literal route ahead of the parameterized one.
+- Frontend now surfaces backend error detail correctly instead of rendering
+  `[object Object]` when the detail is a validation array/object.
+
+### Added
+- **Enable/disable toggle for automations** directly on the automations list — an
+  automation can be turned off without deleting it (preserving its config,
+  guardrails, and run history).
+- **"Refresh now" button** on the empty interface faceplate state — triggers an
+  on-demand SNMP interface enumeration instead of waiting for the next poll.
+- **"Edit configuration" from the Interfaces tab** — the per-interface throughput
+  view now links into the interface editor, giving a second path to interface
+  config if the faceplate view is unavailable. The editor also no longer crashes
+  when an interface has no enumerated config yet (shows guidance to refresh first).
+
 ## [2.0.1]
 
 ### Fixed

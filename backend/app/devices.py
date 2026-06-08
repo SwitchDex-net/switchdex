@@ -189,12 +189,30 @@ async def probe(ip: str, *, auth="snmpv2", snmp_community="", ssh_username="", s
 
 
 # ───────────────────────── real backend ────────────────────────────────
+def _napalm_optional_args(dev):
+    """Build NAPALM optional_args appropriate to the driver's transport.
+
+    Most drivers (ios, iosxe, junos) are SSH-based and want the SSH port. But the
+    Arista EOS driver (and NX-OS) connect over eAPI (HTTP/HTTPS), NOT SSH — passing
+    the SSH port there makes NAPALM attempt a TLS handshake against the SSH daemon,
+    which fails with 'WRONG_VERSION_NUMBER'. For eAPI drivers we therefore pass the
+    eAPI transport + port instead of the SSH port."""
+    plat = (dev.platform or "").lower()
+    if plat in ("eos", "nxos", "nxos_ssh"):
+        # eAPI transport. dev.eapi_transport/eapi_port if present, else sane defaults.
+        transport = getattr(dev, "eapi_transport", None) or "https"
+        port = getattr(dev, "eapi_port", None) or (443 if transport == "https" else 80)
+        return {"transport": transport, "port": port}
+    # SSH-based drivers
+    return {"port": dev.ssh_port}
+
+
 def _napalm_get_config(dev):
     from napalm import get_network_driver
     driver = get_network_driver(dev.platform)
     creds = _creds(dev)
     with driver(hostname=dev.ip, username=creds[0], password=creds[1],
-                optional_args={"port": dev.ssh_port}) as conn:
+                optional_args=_napalm_optional_args(dev)) as conn:
         return conn.get_config()["running"]
 
 
@@ -204,7 +222,7 @@ def _napalm_replace_config(dev, config_text):
     driver = get_network_driver(dev.platform)
     creds = _creds(dev)
     with driver(hostname=dev.ip, username=creds[0], password=creds[1],
-                optional_args={"port": dev.ssh_port}) as conn:
+                optional_args=_napalm_optional_args(dev)) as conn:
         with tempfile.NamedTemporaryFile("w", suffix=".cfg", delete=False) as f:
             f.write(config_text); path = f.name
         try:
