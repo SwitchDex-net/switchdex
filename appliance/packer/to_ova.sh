@@ -2,7 +2,7 @@
 # Convert the Packer qcow2 output into a distributable OVA (VMware/VirtualBox).
 # Requires: qemu-img and VirtualBox (VBoxManage). Run from appliance/packer/.
 set -euo pipefail
-VERSION="${1:-1.6.0}"
+VERSION="${1:-2.0.2}"
 QCOW="output/qemu/switchdex-${VERSION}.qcow2"
 VMDK="output/switchdex-${VERSION}.vmdk"
 OVA="output/switchdex-${VERSION}.ova"

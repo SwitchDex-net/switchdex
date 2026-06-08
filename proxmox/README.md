@@ -9,7 +9,7 @@ Proxmox homelab or small-business node.
 Run **on the Proxmox host** (as root):
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v2.0.0/proxmox/switchdex.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/main/proxmox/switchdex.sh)"
 ```
 
 You'll be prompted for container ID, hostname, cores/RAM/disk, network bridge,
