@@ -3240,7 +3240,11 @@ function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
       <div className="set-section">
         <div className="set-h">Scope</div>
         <label className="auto-lbl">Applies to</label>
-        <select className="set-input" value={a.scope_type} onChange={e=>set("scope_type",e.target.value)}>
+        <select className="set-input" value={a.scope_type} onChange={e=>{
+          const st=e.target.value;
+          const init = st==="type" ? {value:"switch"} : st==="role" ? {value:"access"} : {};
+          setA(p=>({...p,scope_type:st,scope:init}));
+        }}>
           <option value="all">All devices</option>
           <option value="type">Device type</option>
           <option value="role">Device role</option>
@@ -3250,7 +3254,7 @@ function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
             <option value="switch">Switches</option><option value="firewall">Firewalls</option><option value="ap">Access points</option><option value="router">Routers</option>
           </select>
           <label className="auto-lbl">Specific device (optional)</label>
-          <select className="set-input" value={a.scope.device_id||""} onChange={e=>set("scope",{...a.scope, device_id:e.target.value?Number(e.target.value):null})}>
+          <select className="set-input" value={a.scope.device_id||""} onChange={e=>set("scope",{value:a.scope.value||"switch", device_id:e.target.value?Number(e.target.value):null})}>
             <option value="">Any device of this type</option>
             {devices.filter(d=>d.type===(a.scope.value||"switch")).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
@@ -3260,7 +3264,7 @@ function AutomationEditor({auth, devices, initial, onCancel, onSaved}) {
             <option value="access">Access</option><option value="distribution">Distribution</option><option value="core">Core</option><option value="edge">Edge</option>
           </select>
           <label className="auto-lbl">Specific device (optional)</label>
-          <select className="set-input" value={a.scope.device_id||""} onChange={e=>set("scope",{...a.scope, device_id:e.target.value?Number(e.target.value):null})}>
+          <select className="set-input" value={a.scope.device_id||""} onChange={e=>set("scope",{value:a.scope.value||"access", device_id:e.target.value?Number(e.target.value):null})}>
             <option value="">Any device with this role</option>
             {devices.filter(d=>d.role===(a.scope.value||"access")).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
           </select>

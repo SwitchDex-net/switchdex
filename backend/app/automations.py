@@ -51,8 +51,15 @@ async def _resolve_scope(auto, session):
     except Exception:  # noqa: BLE001
         sc = {}
     if st == "type":
+        # defensive: a device-specific scope saved without an explicit type value
+        # should still resolve via device_id rather than matching nothing.
+        if not sc.get("value") and sc.get("device_id"):
+            sel = [d for d in devices if d.id == sc.get("device_id")]
+            return sel
         sel = [d for d in devices if d.device_type == sc.get("value")]
     elif st == "role":
+        if not sc.get("value") and sc.get("device_id"):
+            return [d for d in devices if d.id == sc.get("device_id")]
         sel = [d for d in devices if d.role == sc.get("value")]
     elif st == "ids":
         ids = set(sc.get("ids", []))
