@@ -66,7 +66,7 @@ const api = {
   applyIface: (id, ifname, cfg) => _req(`/devices/${id}/interfaces/${encodeURIComponent(ifname)}/apply`, { method: "POST", body: cfg, timeoutMs: 45000 }),
   listConfigs: (id) => _req(`/devices/${id}/configs`),
   getConfig: (id, vid) => _req(`/devices/${id}/configs/${vid}`),
-  diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${a}&b=${b}`),
+  diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${Number(a)}&b=${Number(b)}`),
   backupDevice: (id) => _req(`/devices/${id}/backup`, { method: "POST", timeoutMs: 60000 }),
   restoreConfig: (id, vid) => _req(`/devices/${id}/restore/${vid}`, { method: "POST", timeoutMs: 150000 }),
   backupAll: () => _req("/backup-all", { method: "POST", timeoutMs: 180000 }),
@@ -1980,8 +1980,12 @@ function ConfigArchive({device, archive, onBackup, onRestore}) {
   // ── diff two versions (server-side git diff in real mode) ─────────────
   function openDiff() {
     if (sel.length !== 2) return;
-    const [a, b] = sel.map(id => versions.find(v => v.id === id)).sort((x, y) => x.ts - y.ts); // older → newer
+    const [a, b] = sel.map(id => versions.find(v => Number(v.id) === Number(id))).sort((x, y) => x.ts - y.ts); // older → newer
     setMode("diff");
+    if (!a || !b || a.id == null || b.id == null) {
+      setDiffData({ a, b, error: "Could not resolve the two selected versions. Reload the history and try again." });
+      return;
+    }
     if (MOCK_MODE) {
       const d = diffConfig(a.text, b.text);
       setDiffData({ rows: d, ...diffStats(d), a, b });
