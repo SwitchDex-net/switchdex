@@ -13,7 +13,9 @@ fi
 
 if [ ! -f .env ]; then
   echo "==> Generating .env with random secrets"
-  rand() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${1:-40}"; }
+  # head closes the pipe after N chars, so tr gets SIGPIPE — harmless, but
+  # silence its stderr so the install output doesn't show a scary "broken pipe".
+  rand() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c "${1:-40}"; }
   IP=$(hostname -I | awk '{print $1}')
   sed -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(rand 48)|" \
       -e "s|^SECRET_KEY=.*|SECRET_KEY=$(rand 64)|" \
