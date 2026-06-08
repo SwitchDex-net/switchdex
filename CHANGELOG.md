@@ -3,6 +3,24 @@
 All notable changes to SwitchDex are recorded here. Versions follow semantic
 versioning (MAJOR.MINOR.PATCH).
 
+## [2.0.1]
+
+### Fixed
+- **Config push / restore failed with `No module named 'pkg_resources'`.** The
+  `setuptools` dependency was pinned `>=70` with no upper bound, so it floated to
+  82.x — but setuptools 80 removed `pkg_resources`, which NAPALM's drivers import
+  during config push. Capped to `>=70,<80` so `pkg_resources` stays available.
+- Pinned `pyeapi==1.0.4` explicitly. NAPALM's Arista EOS driver requires it but
+  does not install it automatically, so it could be missing on a fresh install.
+
+### Known limitations
+- The remediation **uplink-protection guard does not understand in-band/SVI
+  management.** It blocks interfaces by name (uplink/mgmt/trunk/wan), but cannot
+  tell that disabling a plain access port might take down the VLAN carrying the
+  device's management SVI. On an in-band-managed switch, `disable_interface`
+  could sever management even with the guard on. Test remediation against
+  non-production devices, and prefer out-of-band management where possible.
+
 ## [2.0.0]
 
 A major release centered on **automations** and a reworked **notification model**,

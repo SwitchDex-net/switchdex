@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SwitchDex API", version="2.0", lifespan=lifespan)
+app = FastAPI(title="SwitchDex API", version="2.0.1", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(router)
 app.include_router(ws_router)

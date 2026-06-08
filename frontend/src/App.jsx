@@ -36,7 +36,16 @@ async function _req(path, { method = "GET", body, form, timeoutMs = 30000 } = {}
     clearTimeout(timer);
   }
   if (res.status === 401) { _setTok(null); window.dispatchEvent(new Event("of-unauthorized")); throw new Error("Unauthorized"); }
-  if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch {} throw new Error(d); }
+  if (!res.ok) {
+    let d = res.statusText;
+    try {
+      const j = await res.json();
+      if (typeof j.detail === "string") d = j.detail;
+      else if (Array.isArray(j.detail)) d = j.detail.map(x => x.msg || x.detail || JSON.stringify(x)).join("; ");
+      else if (j.detail) d = JSON.stringify(j.detail);
+    } catch {}
+    throw new Error(d);
+  }
   if (res.status === 204) return null;
   const ct = res.headers.get("content-type") || "";
   return ct.includes("application/json") ? res.json() : res.text();
