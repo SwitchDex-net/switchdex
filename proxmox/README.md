@@ -40,12 +40,30 @@ Browse to `https://<container-ip>`, accept the self-signed certificate, log in a
 
 ## Update
 
+Run on the Proxmox host. By default it updates to the **latest tagged release**,
+takes a snapshot first (so you can roll back), and rebuilds cleanly:
+
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v2.0.0/proxmox/update.sh)" -- <CTID>
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/main/proxmox/update.sh)" -- <CTID>
 ```
 
+Optional channel / flags:
+
+```bash
+# bleeding-edge main branch (untested commits)
+... update.sh)" -- <CTID> main
+
+# pin to / roll back to a specific release
+... update.sh)" -- <CTID> v2.0.1
+
+# skip the pre-update snapshot
+... update.sh)" -- <CTID> --no-snapshot
+```
+
+The updater fetches the chosen ref from GitHub (`switchdex-net/switchdex`); the
+container does not auto-update — changes are pulled only when you run this command.
 Data lives in Docker volumes (`pg_data`, `config_repo`), so inventory, the config
-archive, telemetry, alerts, and compliance all survive updates.
+archive, telemetry, alerts, and automations all survive updates.
 
 ## Manage real devices
 
