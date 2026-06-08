@@ -4,7 +4,9 @@ uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.1
 python-multipart==0.0.20   # required by FastAPI to parse the login form (OAuth2 password flow)
-setuptools>=70             # provides pkg_resources, which NAPALM imports (not bundled on Python 3.12+ slim images)
+setuptools>=70,<80       # provides pkg_resources, which NAPALM imports. setuptools 80
+                         #   REMOVED pkg_resources, so this MUST stay capped <80 — an
+                         #   unbounded pin floats to 82+ and breaks config push (eos driver).
 
 # ── Database ──
 sqlalchemy[asyncio]==2.0.36
@@ -19,6 +21,7 @@ GitPython==3.1.43
 
 # ── Device access (multi-vendor) ──
 napalm==5.0.0          # structured multi-vendor get/replace
+pyeapi==1.0.4          # NAPALM's Arista EOS driver needs this; not auto-installed by napalm
 netmiko==4.5.0         # raw CLI for vendors NAPALM doesn't cover
 nornir==3.5.0          # inventory + parallel task orchestration
 nornir-napalm==0.5.0
