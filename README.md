@@ -30,9 +30,12 @@ Device credentials live on the server, never in the browser.
 - **SSH terminal** — full in-browser terminal proxied to the device, handling legacy crypto on older gear
 - **Config archive** — git-backed running-config history with diffs, change detection, and restore
 - **Topology** — auto-generated network map (force-directed or layered) from neighbor data
-- **Alerting** — preset + custom rules, full open→ack→resolve lifecycle, with email / webhook / syslog / Discord notifications
-- **Security** — vulnerability scanning that matches each device's software version against CVEs synced from the NIST NVD, with per-device findings by severity and links to NVD; CVE counts can drive custom alert rules
-- **Telemetry** — time-series CPU, memory, and uptime collected over SNMP, with a charts view and hover tooltips; controller-managed devices are sampled on a slower cadence to respect their API limits
+- **Alerting** — preset + custom rules with a full open→ack→resolve lifecycle; notifications are delivered through automations (see below) to email / webhook / syslog / Discord channels
+- **Automations** — a trigger → scope → action engine: triggers on alerts, metric thresholds, device-down, vulnerabilities found, config drift, or a schedule; acts on the triggering device or a chosen scope; actions range from notify / backup / scan / raise-alert to remediation (config push, disable interface) gated by dry-run-until-armed, optional approval, cooldown, blast-radius caps, and uplink protection
+- **Dashboard** — a configurable fleet overview (KPIs, fleet health, recent alerts, top talkers, client summary) with add/remove/reorder cards
+- **Security** — vulnerability scanning that matches each device's software version against CVEs synced from the NIST NVD, with per-device findings by severity and links to NVD; distinguishes "clear" from "no NVD coverage"; can drive alerts and automations
+- **Telemetry** — time-series CPU, memory, uptime, and **per-interface throughput** collected over SNMP, with charts and history; AP throughput is derived from client traffic; controller-managed devices are sampled on a slower cadence to respect their API limits
+- **Wireless clients** — fleet-wide view of connected wireless clients with per-AP filtering and search
 - **Closed ecosystems** — connect UniFi and Omada controllers to pull their devices into inventory as **read-only**, clearly marked, with a one-click deep-link back to the vendor controller for changes
 - **Auth** — local accounts + optional LDAP / Active Directory, role-based access, persistent sessions across refresh, and a forced password change for the break-glass admin on first login
 
@@ -105,6 +108,12 @@ controller APIs** (read-only). A built-in simulation mode (`DEVICE_BACKEND=sim`,
 > implemented and structurally correct but not yet verified against physical
 > devices of those vendors — the safe-apply preview lets you review the exact
 > commands before anything is sent.
+
+> **Automation remediation note:** the remediation actions (config push, disable
+> interface) are implemented with safety rails (dry-run-until-armed, optional
+> approval, cooldown, blast-radius cap, uplink protection) but have not yet been
+> applied to live devices. Test them in dry-run against your own gear before
+> arming. See `CHANGELOG.md` for the full verified / not-yet-verified breakdown.
 
 ## Contributing
 

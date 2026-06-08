@@ -32,7 +32,7 @@ and starts the stack. The operator just browses to `https://<appliance-ip>`.
 ### 2. Proxmox LXC (one command, lightest install)
 On the Proxmox host:
 ```
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.6.0/proxmox/switchdex.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v2.0.0/proxmox/switchdex.sh)"
 ```
 Creates a Debian LXC (Docker-in-LXC, nesting+keyctl enabled), deploys the stack,
 generates secrets, and auto-starts it. See `proxmox/README.md`. Update later with

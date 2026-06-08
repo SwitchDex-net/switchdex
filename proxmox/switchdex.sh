@@ -6,7 +6,7 @@
 # installs Docker, deploys the SwitchDex stack inside it, generates secrets,
 # and starts it — leaving you a one-URL login.
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.6.0/proxmox/switchdex.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v2.0.0/proxmox/switchdex.sh)"
 #
 # Docker-in-LXC: the container is created unprivileged with nesting+keyctl
 # enabled, which is what Docker needs to run inside an LXC.

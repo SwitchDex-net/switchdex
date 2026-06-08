@@ -3,7 +3,7 @@
 # SwitchDex — update an existing LXC deployment.
 #
 # Run ON THE PROXMOX HOST:
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v1.6.0/proxmox/update.sh)" -- <CTID>
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/switchdex-net/switchdex/v2.0.0/proxmox/update.sh)" -- <CTID>
 #
 # Pulls the latest stack inside the container and recreates the services.
 # Data persists in Docker volumes (pg_data, config_repo), so inventory,
