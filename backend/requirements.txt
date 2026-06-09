@@ -3,7 +3,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.1
-python-multipart==0.0.20   # required by FastAPI to parse the login form (OAuth2 password flow)
+python-multipart==0.0.26   # required by FastAPI to parse the login form (OAuth2 password flow)
 setuptools>=70,<80       # provides pkg_resources, which NAPALM imports. setuptools 80
                          #   REMOVED pkg_resources, so this MUST stay capped <80 — an
                          #   unbounded pin floats to 82+ and breaks config push (eos driver).
@@ -17,7 +17,7 @@ apscheduler==3.11.0
 tzdata>=2024.1            # bundles the IANA tz database so named zones (America/Chicago) resolve on slim images
 
 # ── Config archive (git-backed) ──
-GitPython==3.1.43
+GitPython==3.1.50
 
 # ── Device access (multi-vendor) ──
 napalm==5.0.0          # structured multi-vendor get/replace
@@ -29,9 +29,9 @@ nornir-netmiko==1.0.1
 asyncssh==2.18.0       # async interactive shell for the WebSocket SSH proxy
 
 # ── Notifications ──
-requests==2.32.3       # webhook / Discord notification POSTs
+requests==2.32.4       # webhook / Discord notification POSTs
 
 # ── Auth ──
 bcrypt==4.2.1          # local password hashing
-pyjwt==2.10.1          # JWT issue/verify
+pyjwt==2.12.0          # JWT issue/verify
 ldap3==2.9.1           # LDAP / Active Directory bind

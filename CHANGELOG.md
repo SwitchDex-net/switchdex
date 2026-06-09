@@ -3,6 +3,24 @@
 All notable changes to SwitchDex are recorded here. Versions follow semantic
 versioning (MAJOR.MINOR.PATCH).
 
+## [2.0.3]
+
+### Security
+- Updated dependencies to clear reported vulnerabilities:
+  - **GitPython 3.1.43 → 3.1.50** — patches command-injection / path-traversal /
+    config-section-injection RCE advisories. (SwitchDex only uses local repo
+    operations — diff/commit — not the vulnerable remote-clone or config_writer
+    APIs, so exposure was limited, but the bump removes the risk entirely.)
+  - **python-multipart 0.0.20 → 0.0.26** — patches the arbitrary-file-write
+    (requires non-default upload config SwitchDex doesn't use) and multipart DoS
+    advisories. Used on the login form parse path.
+  - **PyJWT 2.10.1 → 2.12.0** — rejects tokens with unknown `crit` header
+    extensions per RFC 7515.
+  - **requests 2.32.3 → 2.32.4** — fixes the `.netrc` credential-leak via crafted
+    URLs.
+  - **vite 5.4.2 → 5.4.20** (dev/build-only; not shipped in the deployed
+    container) — clears the optimized-deps path-traversal advisory.
+
 ## [2.0.2]
 
 ### Fixed
