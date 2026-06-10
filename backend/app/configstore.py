@@ -83,6 +83,14 @@ async def backup_device(device_id: int, trigger: str = "manual", user: str = "sy
         session.add(ver)
         await session.commit()
 
+        # retention: prune oldest versions beyond the configured cap (0 = keep all)
+        try:
+            keep = await get_retention_limit()
+            if keep > 0:
+                await prune_versions(device_id, keep)
+        except Exception:  # noqa: BLE001
+            pass
+
         # surface the change as an alert/notification (best-effort)
         try:
             from . import alerts as alert_engine
@@ -103,6 +111,51 @@ def read_version(commit_sha: str, dev_rel_path: str) -> str:
         return blob.data_stream.read().decode()
     except Exception:  # noqa: BLE001
         return ""
+
+
+async def delete_version(version_id: int) -> dict:
+    """Delete a stored config version (the DB pointer). The underlying git
+    commit stays in repo history — rewriting git history would invalidate the
+    SHAs of every later commit, breaking all newer versions. Removing the row
+    makes the version unviewable/undiffable/unrestorable in the app; orphaned
+    commit content is negligible on disk. NOTE: if a backup captured a secret
+    that must be truly purged from disk, that requires manual repo surgery."""
+    async with SessionLocal() as s:
+        v = await s.get(ConfigVersion, version_id)
+        if not v:
+            return {"ok": False, "error": "version not found"}
+        await s.delete(v)
+        await s.commit()
+        return {"ok": True, "deleted": version_id}
+
+
+async def get_retention_limit() -> int:
+    """Max stored versions per device. 0 = unlimited (default)."""
+    from .db import Setting
+    async with SessionLocal() as s:
+        row = await s.get(Setting, "config_retention_per_device")
+        try:
+            return max(0, int((row.value or "0").strip())) if row else 0
+        except ValueError:
+            return 0
+
+
+async def prune_versions(device_id: int, keep: int) -> int:
+    """Keep only the newest `keep` versions for a device; delete older rows.
+    Returns the number pruned. No-op when keep <= 0 (unlimited)."""
+    if keep <= 0:
+        return 0
+    async with SessionLocal() as s:
+        rows = (await s.execute(
+            select(ConfigVersion).where(ConfigVersion.device_id == device_id)
+            .order_by(ConfigVersion.ts.desc())
+        )).scalars().all()
+        doomed = rows[keep:]
+        for v in doomed:
+            await s.delete(v)
+        if doomed:
+            await s.commit()
+        return len(doomed)
 
 
 def diff_versions(sha_a: str, sha_b: str, dev_rel_path: str) -> str:

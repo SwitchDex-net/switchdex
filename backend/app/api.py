@@ -6,7 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, De
 from pydantic import BaseModel
 from sqlalchemy import select, delete as sa_delete
 
-from .db import SessionLocal, Device, ConfigVersion, Controller
+from .db import SessionLocal, Device, ConfigVersion, Controller, Setting
 from . import devices as drv
 from . import configstore as store
 from .config import settings
@@ -240,6 +240,36 @@ async def diff(device_id: int, a: int, b: int):
             raise HTTPException(404)
         rel = store._device_path(dev)
         return {"diff": store.diff_versions(va.commit_sha, vb.commit_sha, rel)}
+
+
+@router.get("/configs/retention")
+async def get_retention(_: dict = Depends(get_current_user)):
+    return {"keep": await store.get_retention_limit()}
+
+
+@router.put("/configs/retention")
+async def set_retention(body: dict, _: dict = Depends(require_admin)):
+    keep = max(0, int(body.get("keep", 0)))
+    async with SessionLocal() as s:
+        row = await s.get(Setting, "config_retention_per_device")
+        if row:
+            row.value = str(keep)
+        else:
+            s.add(Setting(key="config_retention_per_device", value=str(keep)))
+        await s.commit()
+    return {"keep": keep}
+
+
+@router.delete("/devices/{device_id}/configs/{version_id}")
+async def delete_config_version(device_id: int, version_id: int, _: dict = Depends(require_admin)):
+    async with SessionLocal() as s:
+        v = await s.get(ConfigVersion, version_id)
+        if not v or v.device_id != device_id:
+            raise HTTPException(404, "version not found for this device")
+    r = await store.delete_version(version_id)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "delete failed"))
+    return r
 
 
 @router.get("/devices/{device_id}/configs/{version_id}")

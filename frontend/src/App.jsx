@@ -67,6 +67,9 @@ const api = {
   listConfigs: (id) => _req(`/devices/${id}/configs`),
   getConfig: (id, vid) => _req(`/devices/${id}/configs/${vid}`),
   diffConfigs: (id, a, b) => _req(`/devices/${id}/configs/diff?a=${Number(a)}&b=${Number(b)}`),
+  deleteConfigVersion: (devId, verId) => _req(`/devices/${devId}/configs/${verId}`, { method: "DELETE" }),
+  getConfigRetention: () => _req("/configs/retention"),
+  setConfigRetention: (keep) => _req("/configs/retention", { method: "PUT", body: {keep} }),
   backupDevice: (id) => _req(`/devices/${id}/backup`, { method: "POST", timeoutMs: 60000 }),
   restoreConfig: (id, vid) => _req(`/devices/${id}/restore/${vid}`, { method: "POST", timeoutMs: 150000 }),
   backupAll: () => _req("/backup-all", { method: "POST", timeoutMs: 180000 }),
@@ -1936,6 +1939,12 @@ function ConfigArchive({device, archive, onBackup, onRestore}) {
   // per-device archive settings (enable + interval), seeded from the device
   const [bkEnabled, setBkEnabled] = useState(device.backupEnabled !== false);
   const [bkInterval, setBkInterval] = useState(device.backupIntervalHours || 24);
+  const [retention, setRetention] = useState(0);   // 0 = keep all (global setting)
+  useEffect(()=>{ if(!MOCK_MODE) api.getConfigRetention().then(r=>setRetention(r.keep||0)).catch(()=>{}); }, []);
+  function saveRetention(keep){
+    setRetention(keep);
+    api.setConfigRetention(keep).catch(e=>alert("Could not save retention: "+e.message));
+  }
   const [bkSaved, setBkSaved] = useState(false);
   function saveBackupSettings(enabled, interval){
     setBkEnabled(enabled); setBkInterval(interval);
@@ -2168,6 +2177,15 @@ function ConfigArchive({device, archive, onBackup, onRestore}) {
           <option value={24}>Daily</option>
           <option value={168}>Weekly</option>
         </select>
+        <span style={{fontSize:12,color:"#8b949e",marginLeft:14}}>Keep</span>
+        <select className="finput" style={{width:130}} value={retention} title="Max versions kept per device (global setting). Oldest are pruned after each new backup."
+          onChange={e=>saveRetention(Number(e.target.value))}>
+          <option value={0}>All versions</option>
+          <option value={10}>Last 10</option>
+          <option value={25}>Last 25</option>
+          <option value={50}>Last 50</option>
+          <option value={100}>Last 100</option>
+        </select>
       </div>
 
       {loading ? (
@@ -2193,6 +2211,10 @@ function ConfigArchive({device, archive, onBackup, onRestore}) {
               <div className="ver-acts">
                 <div className="va" title="View" onClick={() => openView(v)}>{IC.info}</div>
                 <div className="va restore-a" title="Restore" onClick={() => setConfirmRestore(v)}>{IC.restore}</div>
+                <div className="va" title="Delete this version" style={{color:"#f85149"}}
+                  onClick={() => { if(confirm(`Delete this config version (${tsFull(v.ts)}, #${v.hash})? It will no longer be viewable, diffable, or restorable.`)) {
+                    api.deleteConfigVersion(device.id, v.id).then(()=>loadVersions()).catch(e=>alert("Delete failed: "+e.message));
+                  }}}>{IC.x}</div>
               </div>
             </div>
           ))}
@@ -2339,6 +2361,19 @@ function FleetConfigView({devices, archive, onBackupAll, onOpenDevice}) {
 function AppInner({auth, onLogout}) {
   const [devices, setDevices] = useState(MOCK_MODE ? INIT_DEVICES : []);
   const [loading, setLoading] = useState(!MOCK_MODE);
+  // Open-alert count drives the red dot on the Alerts bell — only shown when
+  // there are unacknowledged open alerts. Polled lightly; also refreshed on
+  // view changes so acking alerts clears the dot promptly.
+  const [openAlertCount, setOpenAlertCount] = useState(0);
+  function refreshAlertCount(){
+    if (MOCK_MODE) return;
+    api.alertSummary().then(s=>setOpenAlertCount(s.open||0)).catch(()=>{});
+  }
+  useEffect(()=>{
+    refreshAlertCount();
+    const t = setInterval(refreshAlertCount, 60000);
+    return ()=>clearInterval(t);
+  }, []);
   const VIEWS = ["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients","automations"];
   // Parse the URL hash into { view, selId }. Forms: #/inventory, #/devices/5
   function parseHash(){
@@ -2588,8 +2623,8 @@ function AppInner({auth, onLogout}) {
           <div className="sb-logo">{IC.layers}</div>
           {[["grid","Dashboard","dashboard"],["devices","Inventory","inventory"],["map","Topology","topology"],["bell","Alerts","alerts",true],["shield","Security","compliance"],["archive","Config Mgmt","configmgmt"],["chart","Telemetry","telemetry"],["wifi","Wireless Clients","clients"],["bolt","Automations","automations"],["plug","Integrations","integrations"],["settings","Settings","settings"]].map(([ic,lb,vw,badge])=>(
             <div key={lb} className={`sb-item ${view===vw?"active":""}`} title={lb}
-              onClick={()=>{ if(["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients","automations"].includes(vw)){ setView(vw); } }}>
-              <SBIcon n={ic}/>{badge&&<span className="sb-badge"/>}
+              onClick={()=>{ if(["dashboard","inventory","configmgmt","settings","integrations","topology","alerts","compliance","telemetry","clients","automations"].includes(vw)){ setView(vw); refreshAlertCount(); } }}>
+              <SBIcon n={ic}/>{badge&&openAlertCount>0&&<span className="sb-badge" title={`${openAlertCount} open alert${openAlertCount>1?"s":""}`}/>}
             </div>
           ))}
         </div>
