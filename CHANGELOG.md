@@ -3,6 +3,30 @@
 All notable changes to SwitchDex are recorded here. Versions follow semantic
 versioning (MAJOR.MINOR.PATCH).
 
+## [2.0.4]
+
+### Added
+- **UniFi official API-key authentication** (Network Application 10.1.84+ /
+  UniFi OS). The connector now prefers a stateless `X-API-KEY` — no stored
+  controller admin password, no session management — with username/password as
+  the fallback for older controllers. When using credentials, a dedicated local
+  read-only account is recommended; generate API keys on the controller under
+  Settings → Integrations. Verified against UniFi OS Server.
+- **Config version deletion** — archived config versions can be deleted from the
+  version history (admin-only, with confirmation). Deletion removes the version
+  from the application (no longer viewable, diffable, or restorable); the
+  underlying git commit remains in repo history, since rewriting history would
+  invalidate every later version. Note: a backup that captured a secret
+  requiring true on-disk purging still needs manual repo surgery.
+- **Config retention cap** — optional global "keep last N versions per device"
+  setting (default: keep all). Oldest versions are pruned automatically after
+  each successful backup.
+
+### Fixed
+- The red alert badge on the sidebar bell was hardcoded always-on. It now
+  reflects live state: shown only when unacknowledged open alerts exist, with a
+  count tooltip, refreshing every 60s and on view changes.
+
 ## [2.0.3]
 
 ### Security
