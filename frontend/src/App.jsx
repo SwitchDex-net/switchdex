@@ -4484,7 +4484,7 @@ function IntegrationsView({auth}) {
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name:"", kind:"unifi", base_url:"", site:"default",
-    username:"", password:"", client_id:"", client_secret:"", controller_ident:"" });
+    username:"", password:"", api_key:"", client_id:"", client_secret:"", controller_ident:"" });
   const [testResult, setTestResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const isAdmin = auth.user.role === "admin";
@@ -4525,7 +4525,7 @@ function IntegrationsView({auth}) {
     api.syncController(id).then(r=>{ setTestResult({ok:true,msg:`Synced — ${r.device_count ?? "?"} devices`}); load(); })
       .catch(e=>setTestResult({ok:false,msg:"Sync failed: "+e.message}));
   }
-  function resetForm(){ setForm({ name:"", kind:"unifi", base_url:"", site:"default", username:"", password:"", client_id:"", client_secret:"", controller_ident:"" }); }
+  function resetForm(){ setForm({ name:"", kind:"unifi", base_url:"", site:"default", username:"", password:"", api_key:"", client_id:"", client_secret:"", controller_ident:"" }); }
 
   return (
     <div className="settings-wrap">
@@ -4566,10 +4566,15 @@ function IntegrationsView({auth}) {
           </div>
           <div className="set-field"><label className="set-label">Controller URL</label><input className="set-input" placeholder={form.kind==="unifi"?"https://10.0.9.2:8443":"https://10.0.9.3:8043"} value={form.base_url} onChange={e=>setForm(f=>({...f,base_url:e.target.value}))}/></div>
           {form.kind==="unifi" ? <>
+            <div className="set-field">
+              <label className="set-label">API key <span style={{color:"#6e7681",fontWeight:400}}>(recommended — Network App 10.1.84+; generate under Settings → Integrations)</span></label>
+              <input className="set-input" type="password" placeholder="leave blank to use username/password instead" value={form.api_key||""} onChange={e=>setForm(f=>({...f,api_key:e.target.value}))}/>
+            </div>
             <div className="set-row2">
-              <div><label className="set-label">Username</label><input className="set-input" value={form.username} onChange={e=>setForm(f=>({...f,username:e.target.value}))}/></div>
+              <div><label className="set-label">Username <span style={{color:"#6e7681",fontWeight:400}}>(fallback)</span></label><input className="set-input" value={form.username} onChange={e=>setForm(f=>({...f,username:e.target.value}))}/></div>
               <div><label className="set-label">Password</label><input className="set-input" type="password" value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))}/></div>
             </div>
+            <div style={{fontSize:11,color:"#6e7681",marginTop:4}}>If using username/password, a dedicated local read-only account is strongly recommended over a real admin.</div>
           </> : <>
             <div className="set-field"><label className="set-label">Omada Controller ID (omadacId)</label><input className="set-input" value={form.controller_ident} onChange={e=>setForm(f=>({...f,controller_ident:e.target.value}))}/></div>
             <div className="set-row2">

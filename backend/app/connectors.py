@@ -91,10 +91,18 @@ def _make(ctrl):
 
 # ───────────────────────── UniFi (read-only) ───────────────────────────
 class UniFiConnector:
-    """UniFi Network Controller REST API. Unofficial but stable; read-only here.
+    """UniFi Network Controller REST API. Read-only here.
 
-    Auth: POST /api/login (classic) or /api/auth/login (UniFi OS) with
-    username/password -> session cookie. Data under /api/s/<site>/stat/device.
+    Auth, in preference order:
+    1. Official API key (Network Application 10.1.84+ / UniFi OS): stateless
+       X-API-KEY header on every request — no login flow, no stored password,
+       no session management. Generate under Settings → Control Plane →
+       Integrations (location varies by version) on the controller.
+    2. Username/password fallback (older controllers): POST /api/login (classic)
+       or /api/auth/login (UniFi OS) -> session cookie. A dedicated local
+       read-only account is strongly recommended over a real admin.
+
+    Data under /api/s/<site>/stat/device either way.
     """
     def __init__(self, ctrl):
         self.ctrl = ctrl
@@ -104,7 +112,20 @@ class UniFiConnector:
         import requests
         s = requests.Session()
         s.verify = self.ctrl.verify_tls
-        # UniFi OS prefixes the API; try it, fall back to classic.
+        if self.ctrl.api_key:
+            # official key: stateless, attach header to all requests; verify it
+            # works with a cheap call so misconfigured keys fail fast and loudly.
+            s.headers["X-API-KEY"] = self.ctrl.api_key
+            s.headers["Accept"] = "application/json"
+            self._sess = s
+            r = s.get(self._api("/stat/health"), timeout=10)
+            if not r.ok:
+                self._sess = None
+                raise RuntimeError(
+                    f"UniFi API-key auth failed (HTTP {r.status_code}) — check the key, "
+                    "or clear it to fall back to username/password")
+            return
+        # legacy session auth. UniFi OS prefixes the API; try it, fall back to classic.
         for path in ("/api/auth/login", "/api/login"):
             r = s.post(self.ctrl.base_url + path,
                        json={"username": self.ctrl.username, "password": self.ctrl.password},
