@@ -2,6 +2,7 @@
 change-detection alerts. Runs as its own container so the API stays light."""
 import asyncio
 import logging
+import datetime as dt
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -88,12 +89,21 @@ async def discover_neighbors():
 
 
 async def poll_controllers():
-    """Refresh the controller's device list + read-only state (every 5 min is
-    plenty — inventory doesn't churn fast)."""
+    """Refresh each controller's device list + read-only state, honoring that
+    controller's own poll_interval (seconds). This job ticks every minute but
+    only syncs a controller once its interval has elapsed since last_poll — so
+    a user can dial a rate-limited cloud controller down (e.g. 900s) or a local
+    one up (e.g. 60s) per integration."""
+    now = dt.datetime.utcnow()
     async with SessionLocal() as s:
-        cids = (await s.execute(
-            select(Controller.id).where(Controller.enabled == True))).scalars().all()  # noqa: E712
-    for cid in cids:
+        ctrls = (await s.execute(
+            select(Controller).where(Controller.enabled == True))).scalars().all()  # noqa: E712
+    due = []
+    for c in ctrls:
+        interval = max(30, c.poll_interval or 300)   # floor of 30s to avoid hammering
+        if c.last_poll is None or (now - c.last_poll).total_seconds() >= interval:
+            due.append(c.id)
+    for cid in due:
         res = await sync_one(cid)
         log.info("controller %s sync: %s", cid, "ok" if res.get("ok") else res.get("error"))
 
@@ -114,8 +124,9 @@ async def main():
     await alert_engine.seed_default_rules()
     sched = AsyncIOScheduler()
     sched.add_job(backup_fleet, "interval", hours=1)
-    # refresh controller device list every 5 minutes (inventory changes slowly)
-    sched.add_job(poll_controllers, "interval", minutes=5)
+    # tick every minute; poll_controllers internally honors each controller's
+    # own poll_interval (gated on last_poll), so the effective cadence is per-integration
+    sched.add_job(poll_controllers, "interval", minutes=1)
     # sample controller-managed device metrics every 60s (self-hosted controller,
     # no cloud API quota — responsive AP/switch telemetry)
     sched.add_job(sample_controller_metrics, "interval", seconds=60)

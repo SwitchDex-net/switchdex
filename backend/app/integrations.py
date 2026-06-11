@@ -62,6 +62,27 @@ async def test_controller(body: ControllerIn):
     return await connectors.test_controller(c)
 
 
+@router.put("/{cid}", dependencies=[Depends(require_admin)])
+async def update_controller(cid: int, body: ControllerIn):
+    async with SessionLocal() as s:
+        c = await s.get(Controller, cid)
+        if not c:
+            raise HTTPException(404)
+        data = body.model_dump()
+        # don't wipe stored secrets when the form submits them blank (the UI
+        # leaves password/api_key/client_secret empty to mean "keep existing")
+        for secret in ("password", "api_key", "client_secret"):
+            if not data.get(secret):
+                data.pop(secret, None)
+        for k, v in data.items():
+            setattr(c, k, v)
+        await s.commit()
+        cid2 = c.id
+    await sync_one(cid2)
+    async with SessionLocal() as s:
+        return _out(await s.get(Controller, cid2))
+
+
 @router.post("/{cid}/sync", dependencies=[Depends(require_admin)])
 async def sync_controller(cid: int):
     res = await sync_one(cid)

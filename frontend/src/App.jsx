@@ -75,6 +75,7 @@ const api = {
   backupAll: () => _req("/backup-all", { method: "POST", timeoutMs: 180000 }),
   listControllers: () => _req("/integrations"),
   addController: (b) => _req("/integrations", { method: "POST", body: b }),
+  updateController: (id, b) => _req(`/integrations/${id}`, { method: "PUT", body: b }),
   testController: (b) => _req("/integrations/test", { method: "POST", body: b }),
   syncController: (id) => _req(`/integrations/${id}/sync`, { method: "POST" }),
   deleteController: (id) => _req(`/integrations/${id}`, { method: "DELETE" }),
@@ -2391,7 +2392,6 @@ function AppInner({auth, onLogout}) {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
-  const [editId, setEditId] = useState(null);
   const [view, setView] = useState(_init.view);
   const [archive, setArchive] = useState(()=>MOCK_MODE ? seedArchive(INIT_DEVICES) : {});
 
@@ -4518,8 +4518,9 @@ function IntegrationsView({auth}) {
   const [controllers, setControllers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState(null);   // controller id being edited, or null
   const [form, setForm] = useState({ name:"", kind:"unifi", base_url:"", site:"default",
-    username:"", password:"", api_key:"", client_id:"", client_secret:"", controller_ident:"" });
+    username:"", password:"", api_key:"", client_id:"", client_secret:"", controller_ident:"", poll_interval:300 });
   const [testResult, setTestResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const isAdmin = auth.user.role === "admin";
@@ -4542,13 +4543,21 @@ function IntegrationsView({auth}) {
   function save() {
     if (!form.name || !form.base_url) return;
     if (MOCK_MODE) {
-      setControllers(c => [...c, { id:Date.now(), ...form, enabled:true, last_status:"ok", device_count: form.kind==="unifi"?3:2, poll_interval:300 }]);
-      setAdding(false); setTestResult(null); resetForm(); return;
+      if (editId) setControllers(c => c.map(x=>x.id===editId?{...x,...form}:x));
+      else setControllers(c => [...c, { id:Date.now(), ...form, enabled:true, last_status:"ok", device_count: form.kind==="unifi"?3:2, poll_interval:form.poll_interval||300 }]);
+      setAdding(false); setEditId(null); setTestResult(null); resetForm(); return;
     }
     setBusy(true);
-    api.addController(form)
-      .then(() => { setBusy(false); setAdding(false); setTestResult(null); resetForm(); load(); })
-      .catch(e => { setBusy(false); setTestResult({ ok:false, msg:"Save failed: "+e.message }); });
+    const p = editId ? api.updateController(editId, form) : api.addController(form);
+    p.then(() => { setBusy(false); setAdding(false); setEditId(null); setTestResult(null); resetForm(); load(); })
+     .catch(e => { setBusy(false); setTestResult({ ok:false, msg:(editId?"Update":"Save")+" failed: "+e.message }); });
+  }
+  function startEdit(c){
+    // load the controller into the form; leave secrets blank (blank = keep existing)
+    setForm({ name:c.name||"", kind:c.kind||"unifi", base_url:c.base_url||"", site:c.site||"default",
+      username:c.username||"", password:"", api_key:"", client_id:c.client_id||"", client_secret:"",
+      controller_ident:c.controller_ident||"", poll_interval:c.poll_interval||300 });
+    setEditId(c.id); setAdding(true); setTestResult(null);
   }
   function del(id){
     if (MOCK_MODE) { setControllers(c=>c.filter(x=>x.id!==id)); return; }
@@ -4560,7 +4569,7 @@ function IntegrationsView({auth}) {
     api.syncController(id).then(r=>{ setTestResult({ok:true,msg:`Synced — ${r.device_count ?? "?"} devices`}); load(); })
       .catch(e=>setTestResult({ok:false,msg:"Sync failed: "+e.message}));
   }
-  function resetForm(){ setForm({ name:"", kind:"unifi", base_url:"", site:"default", username:"", password:"", api_key:"", client_id:"", client_secret:"", controller_ident:"" }); }
+  function resetForm(){ setEditId(null); setForm({ name:"", kind:"unifi", base_url:"", site:"default", username:"", password:"", api_key:"", client_id:"", client_secret:"", controller_ident:"", poll_interval:300 }); }
 
   return (
     <div className="settings-wrap">
@@ -4570,7 +4579,7 @@ function IntegrationsView({auth}) {
 
       <div className="set-section">
         <div style={{display:"flex",alignItems:"center"}}>
-          <div style={{flex:1}}><div className="set-h">Connected controllers</div><div className="set-desc" style={{marginBottom:0}}>Polled every 5 minutes for fresh telemetry.</div></div>
+          <div style={{flex:1}}><div className="set-h">Connected controllers</div><div className="set-desc" style={{marginBottom:0}}>Each controller syncs on its own poll interval (configurable per integration).</div></div>
           {isAdmin && !adding && <button className="set-btn primary" onClick={()=>setAdding(true)}>{IC.plus} Add controller</button>}
         </div>
         <div style={{marginTop:14}}>
@@ -4582,6 +4591,7 @@ function IntegrationsView({auth}) {
               <span className="metric-label" style={{margin:0}}>{c.device_count} devices</span>
               <span className={`bk-status ${c.last_status==="ok"?"ok":"failed"}`}><span style={{width:6,height:6,borderRadius:"50%",background:"currentColor"}}/>{c.last_status==="ok"?"synced":"error"}</span>
               {isAdmin && <div className="va" title="Sync now" onClick={()=>sync(c.id)} style={{cursor:"pointer"}}>{IC.refresh}</div>}
+              {isAdmin && <div className="va" title="Edit" onClick={()=>startEdit(c)} style={{cursor:"pointer"}}>{IC.edit}</div>}
               {isAdmin && <div className="va" title="Remove" onClick={()=>del(c.id)} style={{cursor:"pointer"}}>{IC.x}</div>}
             </div>
           ))}
@@ -4590,16 +4600,20 @@ function IntegrationsView({auth}) {
 
       {adding && isAdmin && (
         <div className="set-section">
-          <div className="set-h">Add controller</div>
+          <div className="set-h">{editId?"Edit controller":"Add controller"}</div>
           <div className="seg" style={{marginBottom:16}}>
-            <button className={`seg-btn ${form.kind==="unifi"?"on":""}`} onClick={()=>setForm(f=>({...f,kind:"unifi"}))}>UniFi</button>
-            <button className={`seg-btn ${form.kind==="omada"?"on":""}`} onClick={()=>setForm(f=>({...f,kind:"omada"}))}>Omada</button>
+            <button className={`seg-btn ${form.kind==="unifi"?"on":""}`} disabled={!!editId} onClick={()=>!editId&&setForm(f=>({...f,kind:"unifi"}))}>UniFi</button>
+            <button className={`seg-btn ${form.kind==="omada"?"on":""}`} disabled={!!editId} onClick={()=>!editId&&setForm(f=>({...f,kind:"omada"}))}>Omada</button>
           </div>
           <div className="set-row2" style={{marginBottom:13}}>
             <div><label className="set-label">Name</label><input className="set-input" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></div>
             <div><label className="set-label">Site</label><input className="set-input" value={form.site} onChange={e=>setForm(f=>({...f,site:e.target.value}))}/></div>
           </div>
           <div className="set-field"><label className="set-label">Controller URL</label><input className="set-input" placeholder={form.kind==="unifi"?"https://10.0.9.2:8443":"https://10.0.9.3:8043"} value={form.base_url} onChange={e=>setForm(f=>({...f,base_url:e.target.value}))}/></div>
+          <div className="set-field">
+            <label className="set-label">Poll interval <span style={{color:"#6e7681",fontWeight:400}}>(seconds — how often SwitchDex syncs this controller; default 300, min 30)</span></label>
+            <input className="set-input" type="number" min={30} value={form.poll_interval??300} onChange={e=>setForm(f=>({...f,poll_interval:Math.max(30, Number(e.target.value)||300)}))}/>
+          </div>
           {form.kind==="unifi" ? <>
             <div className="set-field">
               <label className="set-label">API key <span style={{color:"#6e7681",fontWeight:400}}>(recommended — Network App 10.1.84+; generate under Settings → Integrations)</span></label>
@@ -4618,9 +4632,9 @@ function IntegrationsView({auth}) {
             </div>
           </>}
           <div style={{display:"flex",gap:8,marginTop:14}}>
-            <button className="set-btn" onClick={()=>{setAdding(false);setTestResult(null);}}>Cancel</button>
+            <button className="set-btn" onClick={()=>{setAdding(false);setTestResult(null);resetForm();}}>Cancel</button>
             <button className="set-btn test" onClick={testConn}>Test connection</button>
-            <button className="set-btn primary" onClick={save}>Save & sync</button>
+            <button className="set-btn primary" onClick={save}>{editId?"Save changes":"Save & sync"}</button>
           </div>
           {testResult && <div className={`test-result ${testResult.ok?"ok":"fail"}`}>{testResult.msg}</div>}
         </div>
