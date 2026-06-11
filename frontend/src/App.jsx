@@ -2392,6 +2392,7 @@ function AppInner({auth, onLogout}) {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
+  const [editId, setEditId] = useState(null);   // device id being edited in the device modal
   const [view, setView] = useState(_init.view);
   const [archive, setArchive] = useState(()=>MOCK_MODE ? seedArchive(INIT_DEVICES) : {});
 
