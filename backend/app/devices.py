@@ -893,6 +893,21 @@ def _real_probe(ip, auth, snmp_community, ssh_username, ssh_password):
             fp["hostname"] = sysname
         if syslocation:
             fp["location"] = syslocation
+        # Hardware model from ENTITY-MIB entPhysicalModelName. sysDescr rarely
+        # contains the model (e.g. a Catalyst 3850's sysDescr never says
+        # WS-C3850-12X48U); the chassis row of the entity table does. Take the
+        # first non-empty, non-trivial entry — vendor-neutral (Cisco/Arista/
+        # Juniper all implement ENTITY-MIB).
+        if not fp.get("model"):
+            try:
+                ents = _snmp_walk(ip, community, "1.3.6.1.2.1.47.1.1.1.1.13")
+                for _idx, val in sorted(ents.items(), key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0):
+                    v = (val or "").strip()
+                    if v and len(v) > 2:
+                        fp["model"] = v
+                        break
+            except Exception:  # noqa: BLE001
+                pass
         return fp
     if not user:
         return {"reachable": False, "error": "SNMP returned nothing and no SSH username configured."}

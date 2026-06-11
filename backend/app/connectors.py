@@ -148,10 +148,10 @@ class UniFiConnector:
         for d in r.json().get("data", []):
             out.append({
                 "external_id": d.get("_id") or d.get("mac"),
-                "name": d.get("name") or d.get("model") or d.get("mac"),
+                "name": d.get("name") or _unifi_model(d.get("model", "")) or d.get("mac"),
                 "ip": d.get("ip", ""),
                 "vendor": "Ubiquiti",
-                "model": d.get("model", ""),
+                "model": _unifi_model(d.get("model", "")),
                 "os": d.get("version", ""),
                 "device_type": _unifi_type(d.get("type")),
                 "status": "up" if d.get("state") == 1 else "down",
@@ -161,15 +161,31 @@ class UniFiConnector:
         return out
 
     def device_metrics(self, ext):
-        """Per-device metrics from the UniFi controller (/stat/device)."""
+        """Per-device metrics from the UniFi controller (/stat/device).
+
+        NOTE the two similarly-named keys in UniFi device records: `sys_stats`
+        holds loadavg/mem_used/mem_total, while `"system-stats"` (dash) holds the
+        cpu/mem PERCENTAGES (as strings). We want the percentages."""
         r = self._sess.get(self._api("/stat/device"), timeout=15)
         r.raise_for_status()
         for d in r.json().get("data", []):
             if (d.get("_id") or d.get("mac")) == ext:
-                sysstats = d.get("sys_stats", {})
+                ss = d.get("system-stats", {}) or {}
+                legacy = d.get("sys_stats", {}) or {}
+                def _f(v):
+                    try: return float(v)
+                    except (TypeError, ValueError): return 0.0
+                cpu = _f(ss.get("cpu")) or _f(legacy.get("cpu"))
+                mem = _f(ss.get("mem")) or _f(legacy.get("mem"))
+                # derive mem% from used/total if only legacy fields exist
+                if not mem and legacy.get("mem_total"):
+                    try:
+                        mem = round(100.0 * float(legacy.get("mem_used", 0)) / float(legacy["mem_total"]), 1)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        mem = 0.0
                 return {
-                    "cpu": float(sysstats.get("cpu", 0) or 0),
-                    "mem": float(sysstats.get("mem", 0) or 0),
+                    "cpu": cpu,
+                    "mem": mem,
                     "uptime": d.get("uptime", 0),
                     "clients": d.get("num_sta", 0),
                     "rx_bytes": d.get("rx_bytes", 0),
@@ -184,22 +200,37 @@ class UniFiConnector:
         return {}
 
     def list_clients(self):
-        """UniFi clients via /stat/sta, mapped to the vendor-neutral shape."""
+        """UniFi clients via /stat/sta, mapped to the vendor-neutral shape.
+
+        /stat/sta client records carry only the AP's MAC (ap_mac) — not its
+        display name — so we resolve names via a mac→name map from /stat/device.
+        (`ap_displayName` exists only on some UniFi versions; don't rely on it.)"""
         try:
             r = self._sess.get(self._api("/stat/sta"), timeout=15)
             r.raise_for_status()
         except Exception:  # noqa: BLE001
             return []
+        # AP mac -> display name map for resolving each client's ap_name
+        mac_to_name = {}
+        try:
+            rd = self._sess.get(self._api("/stat/device"), timeout=15)
+            rd.raise_for_status()
+            for dev in rd.json().get("data", []):
+                if dev.get("mac"):
+                    mac_to_name[dev["mac"]] = dev.get("name") or dev.get("hostname") or dev["mac"]
+        except Exception:  # noqa: BLE001
+            pass
         out = []
         for d in r.json().get("data", []):
             radio = d.get("radio", "")  # ng=2.4, na/ac=5, 6e=6
             band = {"ng": "2.4", "na": "5", "ac": "5", "6e": "6"}.get(radio, "")
+            ap_mac = d.get("ap_mac", "")
             out.append({
                 "mac": d.get("mac", ""),
                 "name": d.get("name") or d.get("hostname") or d.get("mac", ""),
                 "ip": d.get("ip", ""),
-                "ap_name": d.get("ap_displayName", "") or d.get("ap_mac", ""),
-                "ap_mac": d.get("ap_mac", ""),
+                "ap_name": d.get("ap_displayName", "") or mac_to_name.get(ap_mac, "") or ap_mac,
+                "ap_mac": ap_mac,
                 "ssid": d.get("essid", ""),
                 "band": band,
                 "channel": d.get("channel", 0),
@@ -220,6 +251,41 @@ class UniFiConnector:
 
 def _unifi_type(t):
     return {"usw": "switch", "ugw": "router", "uap": "ap"}.get(t, "switch")
+
+
+# Ubiquiti reports internal hardware SKU codes (e.g. U7PG2), not marketing names.
+# Map the common ones; unknown codes pass through as-is so nothing is hidden.
+_UNIFI_MODELS = {
+    # 802.11ac APs
+    "U7PG2": "UAP-AC-Pro", "U7LT": "UAP-AC-Lite", "U7LR": "UAP-AC-LR",
+    "U7HD": "UAP-AC-HD", "U7SHD": "UAP-AC-SHD", "U7MSH": "UAP-AC-M-Pro",
+    "U7MP": "UAP-AC-M", "U7IW": "UAP-AC-IW", "U7IWP": "UAP-AC-IW-Pro",
+    "U7NHD": "UAP-nanoHD", "UFLHD": "UAP-FlexHD", "UHDIW": "UAP-IW-HD",
+    "UCXG": "UAP-XG", "UXSDM": "UWB-XG", "UXBSDM": "UWB-XG-BK",
+    # WiFi 5/6/6E/7 ("U6"/"U7" marketing era)
+    "UAL6": "U6-Lite", "UALR6": "U6-LR", "UAP6": "U6-Pro", "UAP6MP": "U6-Pro",
+    "UALR6v2": "U6-LR", "UAE6": "U6-Extender", "UAM6": "U6-Mesh",
+    "UAIW6": "U6-IW", "UAE6E": "U6-Enterprise", "U6ENT": "U6-Enterprise",
+    "U7PRO": "U7-Pro", "U7PROMAX": "U7-Pro-Max",
+    # legacy 802.11n
+    "BZ2": "UAP", "BZ2LR": "UAP-LR", "U2HSR": "UAP-Outdoor+",
+    "U2IW": "UAP-IW", "U2L48": "UAP-LR", "U2Lv2": "UAP-LRv2", "U2Sv2": "UAPv2",
+    "U2O": "UAP-Outdoor", "U5O": "UAP-Outdoor5",
+    # common switches / gateways
+    "US8P60": "US-8-60W", "US8P150": "US-8-150W", "US8": "US-8",
+    "US16P150": "US-16-150W", "US24": "US-24", "US24P250": "US-24-250W",
+    "US24PRO": "USW-Pro-24-PoE", "US48": "US-48", "US48P500": "US-48-500W",
+    "USL8LP": "USW-Lite-8-PoE", "USL16LP": "USW-Lite-16-PoE",
+    "USL24": "USW-24", "USL48": "USW-48", "USL24P": "USW-24-PoE",
+    "USL48P": "USW-48-PoE", "USMINI": "USW-Flex-Mini", "USF5P": "USW-Flex",
+    "UGW3": "USG", "UGW4": "USG-Pro-4", "UGWXG": "USG-XG-8",
+    "UXGPRO": "UXG-Pro", "UDM": "UDM", "UDMPRO": "UDM-Pro", "UDMSE": "UDM-SE",
+    "UDR": "UDR", "UDW": "UDW",
+}
+
+
+def _unifi_model(code: str) -> str:
+    return _UNIFI_MODELS.get(code, code)
 
 
 # ───────────────────────── Omada (read-only now, write-capable) ─────────
