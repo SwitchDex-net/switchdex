@@ -3,6 +3,34 @@
 All notable changes to SwitchDex are recorded here. Versions follow semantic
 versioning (MAJOR.MINOR.PATCH).
 
+## [2.0.5]
+
+### Added
+- **Per-controller poll interval** — each integration now has a configurable sync
+  interval (seconds; default 300, min 30). The scheduler honors each controller's
+  own interval instead of a fixed global cadence, so a rate-limited cloud
+  controller can be dialed down or a local one up, independently.
+- **Controller editing** — controllers can now be edited in place (previously
+  add/delete only). Stored secrets are preserved when their fields are left blank.
+
+### Fixed
+- **UniFi: clients now associate with the correct AP.** Client records carry only
+  the AP's MAC, not its name; the connector now resolves the AP name via a
+  mac→name map from the device list. Fixes the Wireless Clients view and per-AP
+  throughput attribution.
+- **UniFi: device CPU/memory metrics now populate.** Read from the `system-stats`
+  key (percentages) instead of `sys_stats`, with a fallback for older fields.
+- **UniFi: friendly model names.** Ubiquiti reports internal SKU codes (e.g.
+  U7PG2); these are now mapped to marketing names (UAP-AC-Pro, etc.). Unknown
+  codes pass through unchanged.
+- **SNMP devices: hardware model now discovered via ENTITY-MIB.** sysDescr rarely
+  contains the model (e.g. a Catalyst 3850 reports no model number there); the
+  probe now reads `entPhysicalModelName`. Vendor-neutral. Existing devices need a
+  one-time re-probe/backfill to populate the stored model.
+- **Per-controller poll interval honored exactly.** Added a small grace tolerance
+  to the interval check so a controller whose interval equals the scheduler tick
+  period syncs every tick rather than every other tick.
+
 ## [2.0.4]
 
 ### Added

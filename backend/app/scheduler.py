@@ -101,7 +101,15 @@ async def poll_controllers():
     due = []
     for c in ctrls:
         interval = max(30, c.poll_interval or 300)   # floor of 30s to avoid hammering
-        if c.last_poll is None or (now - c.last_poll).total_seconds() >= interval:
+        # Grace tolerance: the job ticks every 60s, and scheduler jitter makes the
+        # measured elapsed land a hair under `interval` on the tick where it should
+        # fire (e.g. 59.97s for a 60s interval), so a strict `>= interval` skips
+        # that tick and waits a full extra period (60s set → 120s actual). Allow a
+        # small tolerance so a controller whose interval == the tick period fires
+        # every tick as intended. Tolerance stays well under the tick period, so a
+        # controller can never double-fire within one tick.
+        TICK_GRACE = 5  # seconds
+        if c.last_poll is None or (now - c.last_poll).total_seconds() >= (interval - TICK_GRACE):
             due.append(c.id)
     for cid in due:
         res = await sync_one(cid)
