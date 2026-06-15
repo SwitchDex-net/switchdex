@@ -9,6 +9,7 @@ services:
     restart: unless-stopped
     environment:
       PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
+      TLS_MODE: ${TLS_MODE:-internal}
     ports:
       - "80:80"
       - "443:443"

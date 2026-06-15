@@ -105,6 +105,27 @@ when ready:
    (For a trusted cert, set `PUBLIC_HOSTNAME` to a DNS name in
    `/opt/switchdex/.env` and the appliance will obtain one automatically.)
 
+## Running behind a reverse proxy (NGINX Proxy Manager, Traefik, etc.)
+If you front SwitchDex with a reverse proxy that terminates TLS, set `TLS_MODE`
+in `/opt/switchdex/.env` so Caddy serves **plain HTTP** instead of a self-signed
+cert — this avoids 502 / upstream-certificate-verification errors at the proxy:
+
+```
+TLS_MODE=http
+```
+Then `cd /opt/switchdex && docker compose up -d --force-recreate caddy`.
+
+Point your proxy at **`http://<appliance-ip>:80`** (scheme `http`). The proxy
+handles the public certificate; the internal hop is plain HTTP on your LAN.
+
+`TLS_MODE` accepts:
+- `internal` (default) — self-signed cert for direct IP/localhost access.
+- `auto` — real Let's Encrypt cert (requires a public, resolvable `PUBLIC_HOSTNAME`).
+- `http` — plain HTTP, for behind a TLS-terminating reverse proxy.
+
+**Enable WebSocket support** on the proxy host so the in-browser SSH console
+(`/ws/*`) works. In NGINX Proxy Manager that's the "Websockets Support" toggle.
+
 ## Connect to real devices
 Out of the box the appliance runs in **simulation mode** so you can explore it
 immediately. To manage real hardware:

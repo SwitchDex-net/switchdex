@@ -1,23 +1,29 @@
-# Caddy terminates TLS, serves the built frontend, and proxies the API +
-# WebSocket SSH stream to the backend.
+# Caddy terminates TLS (or serves plain HTTP when behind a reverse proxy),
+# serves the built frontend, and proxies the API + WebSocket SSH stream to the
+# backend.
 #
-# TLS strategy:
-#   - A real DNS name in PUBLIC_HOSTNAME -> Caddy gets a Let's Encrypt cert.
-#   - A bare IP or "localhost"           -> Caddy serves a self-signed cert
-#     from its internal CA.
+# TLS_MODE (set in .env) selects the strategy:
+#   internal  (default) — self-signed cert from Caddy's internal CA, for direct
+#                         access by IP or localhost. Accept the browser warning.
+#   auto                — real Let's Encrypt cert. Requires PUBLIC_HOSTNAME to be
+#                         a public DNS name that resolves to this host and that
+#                         Caddy can reach LE from. Best for direct internet access.
+#   http                — plain HTTP, no TLS. For running BEHIND a reverse proxy
+#                         (NGINX Proxy Manager, Traefik, etc.) that terminates TLS
+#                         itself. Eliminates the self-signed-cert 502 / upstream
+#                         verification problems — the proxy connects to plain HTTP.
 #
-# default_sni is required for the bare-IP case: browsers and curl do NOT send
-# SNI when connecting to an IP address, so without this Caddy can't decide
-# which certificate to present and aborts the handshake with a TLS "internal
-# error". Pinning default_sni to the configured hostname makes the IP work.
+# default_sni is required for the bare-IP internal case: browsers and curl do NOT
+# send SNI when connecting to an IP, so without it Caddy can't pick a cert.
 
 {
 	default_sni {$PUBLIC_HOSTNAME:localhost}
+	# Global options that only apply in http mode are injected by the entrypoint.
+	{$CADDY_GLOBAL_EXTRA}
 }
 
-{$PUBLIC_HOSTNAME:localhost} {
-	# self-signed cert from Caddy's internal CA (used for IP / localhost)
-	tls internal
+{$SITE_ADDRESS:{$PUBLIC_HOSTNAME:localhost}} {
+	{$TLS_DIRECTIVE:tls internal}
 
 	# API + WebSocket -> FastAPI backend
 	handle /api/* {
