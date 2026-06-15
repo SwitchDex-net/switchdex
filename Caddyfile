@@ -16,14 +16,16 @@
 # default_sni is required for the bare-IP internal case: browsers and curl do NOT
 # send SNI when connecting to an IP, so without it Caddy can't pick a cert.
 
+# The entrypoint always exports SITE_ADDRESS, TLS_DIRECTIVE, and
+# CADDY_GLOBAL_EXTRA (one set per TLS_MODE), so they are referenced here without
+# nested defaults — Caddy's {$VAR:default} does NOT support a nested {$VAR:...}
+# as the default, which is a parse error.
 {
-	default_sni {$PUBLIC_HOSTNAME:localhost}
-	# Global options that only apply in http mode are injected by the entrypoint.
 	{$CADDY_GLOBAL_EXTRA}
 }
 
-{$SITE_ADDRESS:{$PUBLIC_HOSTNAME:localhost}} {
-	{$TLS_DIRECTIVE:tls internal}
+{$SITE_ADDRESS} {
+	{$TLS_DIRECTIVE}
 
 	# API + WebSocket -> FastAPI backend
 	handle /api/* {
