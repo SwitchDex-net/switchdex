@@ -3,6 +3,23 @@
 All notable changes to SwitchDex are recorded here. Versions follow semantic
 versioning (MAJOR.MINOR.PATCH).
 
+## [2.0.6]
+
+### Added
+- **`TLS_MODE` setting for running behind a reverse proxy.** A new `.env` option
+  controls how Caddy serves the UI:
+  - `internal` (default) — self-signed cert for direct IP/localhost access
+    (unchanged behaviour).
+  - `auto` — real Let's Encrypt cert (requires a public, resolvable
+    `PUBLIC_HOSTNAME`).
+  - `http` — plain HTTP, no TLS, for running behind a TLS-terminating reverse
+    proxy (NGINX Proxy Manager, Traefik, etc.). The proxy handles the public
+    certificate; the internal hop is plain HTTP, avoiding the self-signed-cert
+    502 and the HTTP→HTTPS redirect loop.
+  `TLS_MODE` is a per-appliance `.env` setting and requires a caddy rebuild
+  (`--no-cache`) after changing. Full setup and troubleshooting (502, blank page,
+  redirect loop, NPM "Cache Assets" gotcha) documented in `docs/DEPLOY.md`.
+
 ## [2.0.5]
 
 ### Added

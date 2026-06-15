@@ -61,6 +61,13 @@ A fresh install starts **empty and in real-device mode** — add your own device
 set `DEVICE_BACKEND=sim` and `SEED_DEMO_DEVICES=true` in `.env` before starting,
 which populates a few simulated devices with live-looking data.
 
+> **Behind a reverse proxy** (NGINX Proxy Manager, Traefik, etc.)? Set
+> `TLS_MODE=http` in `.env` and rebuild caddy so SwitchDex serves plain HTTP and
+> the proxy terminates TLS. See
+> [docs/DEPLOY.md → Running behind a reverse proxy](docs/DEPLOY.md) for the full
+> setup and troubleshooting (it covers the common 502 / blank-page / redirect-loop
+> gotchas).
+
 ## Deployment options
 
 | Method | Best for | Guide |

@@ -106,25 +106,69 @@ when ready:
    `/opt/switchdex/.env` and the appliance will obtain one automatically.)
 
 ## Running behind a reverse proxy (NGINX Proxy Manager, Traefik, etc.)
-If you front SwitchDex with a reverse proxy that terminates TLS, set `TLS_MODE`
-in `/opt/switchdex/.env` so Caddy serves **plain HTTP** instead of a self-signed
-cert — this avoids 502 / upstream-certificate-verification errors at the proxy:
 
+If you front SwitchDex with a reverse proxy that terminates TLS, set
+`TLS_MODE=http` so Caddy serves **plain HTTP** instead of a self-signed cert.
+The proxy handles the public certificate; the internal hop is plain HTTP on your
+LAN. This avoids the self-signed-cert 502 and the HTTP→HTTPS redirect loop.
+
+**This is a per-appliance setting, set manually in each box's `.env`.** It is not
+carried by a code update — pulling a new version gives Caddy the *ability* to do
+HTTP mode, but you still have to set `TLS_MODE=http` on that specific appliance.
+
+On the appliance:
 ```
+# 1. set the mode in /opt/switchdex/.env
 TLS_MODE=http
-```
-Then `cd /opt/switchdex && docker compose up -d --force-recreate caddy`.
 
-Point your proxy at **`http://<appliance-ip>:80`** (scheme `http`). The proxy
-handles the public certificate; the internal hop is plain HTTP on your LAN.
+# 2. rebuild caddy. --no-cache is REQUIRED — this is a build-level change and a
+#    cached image will silently keep serving the old (HTTPS) behaviour.
+cd /opt/switchdex
+docker compose build --no-cache caddy
+docker compose up -d --force-recreate caddy
+```
+
+Verify the appliance now serves plain HTTP (expect `HTTP/1.1 200 OK`, NOT a 308
+redirect):
+```
+curl -I http://<appliance-ip>/
+```
 
 `TLS_MODE` accepts:
-- `internal` (default) — self-signed cert for direct IP/localhost access.
+- `internal` (default) — self-signed cert for direct access by IP/localhost.
 - `auto` — real Let's Encrypt cert (requires a public, resolvable `PUBLIC_HOSTNAME`).
-- `http` — plain HTTP, for behind a TLS-terminating reverse proxy.
+- `http` — plain HTTP, for running behind a TLS-terminating reverse proxy.
 
-**Enable WebSocket support** on the proxy host so the in-browser SSH console
-(`/ws/*`) works. In NGINX Proxy Manager that's the "Websockets Support" toggle.
+### Proxy host settings
+Point the proxy at the appliance with:
+- **Scheme:** `http`  (not https)
+- **Forward host:** the appliance IP
+- **Forward port:** `80`  (not 443)
+- **Websockets support: ON** — required for the in-browser SSH console (`/ws/*`).
+  In NGINX Proxy Manager that's the "Websockets Support" toggle.
+- **Cache Assets: OFF** — in NGINX Proxy Manager, leave "Cache Assets" disabled.
+  When on, NPM's asset-caching location block intercepts the JS bundle/favicon
+  and returns 502s, producing a blank page even though the HTML loads.
+
+### Trade-off
+With `TLS_MODE=http`, **direct HTTPS access by IP (`https://<appliance-ip>`)
+stops working** — the appliance only serves plain HTTP on port 80, reachable
+through the proxy. Reach it via the proxied hostname instead. If you need both
+direct-IP HTTPS *and* proxy access, keep `TLS_MODE=internal` and configure the
+proxy to trust the self-signed upstream (`proxy_ssl_verify off`) instead.
+
+### Troubleshooting
+- **`ERR_TOO_MANY_REDIRECTS`** — `TLS_MODE` is still `internal`/unset, so Caddy
+  redirects HTTP→HTTPS while the proxy forwards HTTP, looping forever. Set
+  `TLS_MODE=http` and rebuild caddy (`--no-cache`).
+- **502 Bad Gateway** — the proxy is forwarding to the wrong scheme/port. Confirm
+  scheme `http`, port `80`. Test the upstream directly: `curl -I http://<ip>/`
+  should return 200.
+- **Blank page, favicon/JS 502** — "Cache Assets" is enabled on the proxy host;
+  disable it.
+- **Blank page, empty HTML body** — Caddy isn't serving; check it parsed its
+  config: `docker compose logs caddy` (look for a config/adapt error) and that
+  the rebuild used `--no-cache`.
 
 ## Connect to real devices
 Out of the box the appliance runs in **simulation mode** so you can explore it
