@@ -113,6 +113,7 @@ const api = {
   securityScanDevice: (id) => _req(`/security/devices/${id}/scan`, { method: "POST" }),
   securitySync: (full=false) => _req(`/security/sync?full=${full}`, { method: "POST", timeoutMs: 30000 }),
   getNvdKey: () => _req("/security/nvd-key"),
+  getVersion: () => _req("/version"),
   setNvdKey: (key) => _req("/security/nvd-key", { method: "PUT", body: { key } }),
   securityScanStatus: () => _req("/security/scan-status"),
   setDeviceCpe: (id, cpe) => _req(`/security/devices/${id}/cpe`, { method: "PUT", body: {cpe} }),
@@ -524,6 +525,11 @@ tbody tr:hover .row-acts{opacity:1;}
 /* ── settings ── */
 .settings-wrap{flex:1;overflow-y:auto;padding:20px;}
 .set-section{background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:18px 20px;margin-bottom:16px;max-width:680px;}
+.about-grid{display:flex;flex-direction:column;gap:2px;margin-top:6px;}
+.about-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid #161b22;}
+.about-row:last-child{border-bottom:none;}
+.about-k{color:#8b949e;font-size:13px;}
+.about-v{color:#e6edf3;font-size:13px;font-family:'IBM Plex Mono',monospace;}
 .set-h{font-size:14px;font-weight:600;color:#e6edf3;margin-bottom:4px;display:flex;align-items:center;gap:8px;}
 .set-desc{font-size:12px;color:#8b949e;margin-bottom:16px;}
 .set-field{margin-bottom:13px;}
@@ -4665,6 +4671,8 @@ function SettingsView({auth}) {
   const [nvdInput, setNvdInput] = useState("");
   const [nvdSaving, setNvdSaving] = useState(false);
   const [nvdMsg, setNvdMsg] = useState(null);
+  const [verInfo, setVerInfo] = useState(null);   // {current, latest, update_available, release_notes_url, checked, error}
+  useEffect(()=>{ if(!MOCK_MODE) api.getVersion().then(setVerInfo).catch(()=>setVerInfo({current:"?", checked:false, error:"version check unavailable"})); }, []);
   useEffect(()=>{ if(!MOCK_MODE) api.getNvdKey().then(setNvd).catch(()=>setNvd({configured:false})); }, []);
   function saveNvd(){
     setNvdSaving(true); setNvdMsg(null);
@@ -4716,6 +4724,7 @@ function SettingsView({auth}) {
         <button className={`fbtn ${tab==="ldap"?"on":""}`} onClick={()=>setTab("ldap")}>LDAP / Active Directory</button>
         <button className={`fbtn ${tab==="notifications"?"on":""}`} onClick={()=>setTab("notifications")}>Notifications</button>
         <button className={`fbtn ${tab==="integrations"?"on":""}`} onClick={()=>setTab("integrations")}>API keys</button>
+        <button className={`fbtn ${tab==="about"?"on":""}`} onClick={()=>setTab("about")}>About</button>
       </div>
 
       {tab==="users" && <>
@@ -4839,6 +4848,50 @@ function SettingsView({auth}) {
             {channels.length===0 && <div className="al-row"><span style={{color:"#8b949e",fontSize:13}}>No channels configured yet.</span></div>}
             {isAdmin && <div className="al-row"><button className="al-btn" style={{margin:"0 auto"}} onClick={()=>setEditChan({kind:"webhook",enabled:true,config:{}})}>{IC.plus} Add channel (email · webhook · syslog · Discord)</button></div>}
           </div>
+        </div>
+      </>}
+
+      {tab==="about" && <>
+        <div className="set-section">
+          <div className="set-h">About SwitchDex</div>
+          <div className="about-grid">
+            <div className="about-row"><span className="about-k">Installed version</span>
+              <span className="about-v">{verInfo ? (verInfo.current||"unknown") : "…"}</span></div>
+            <div className="about-row"><span className="about-k">Latest release</span>
+              <span className="about-v">
+                {!verInfo ? "…"
+                  : verInfo.latest ? verInfo.latest
+                  : verInfo.error ? <span style={{color:"#8b949e"}}>check unavailable</span>
+                  : "unknown"}
+              </span></div>
+            <div className="about-row"><span className="about-k">Status</span>
+              <span className="about-v">
+                {!verInfo ? "…"
+                  : verInfo.update_available
+                    ? <span style={{color:"#d29922",fontWeight:600}}>● Update available</span>
+                    : verInfo.checked
+                      ? <span style={{color:"#3fb950"}}>● Up to date</span>
+                      : <span style={{color:"#8b949e"}}>● Couldn't check (offline?)</span>}
+              </span></div>
+          </div>
+
+          {verInfo && verInfo.update_available && (
+            <div className="cfg-banner" style={{marginTop:14,borderColor:"#9e6a03",background:"#231a0d"}}>
+              <div>
+                <strong>SwitchDex {verInfo.latest} is available.</strong> You're running {verInfo.current}.
+                {verInfo.release_notes_url && <> <a href={verInfo.release_notes_url} target="_blank" rel="noreferrer" style={{color:"#58a6ff"}}>View release notes ↗</a></>}
+                <div style={{fontSize:12,color:"#8b949e",marginTop:6}}>
+                  Update from the Proxmox host with the SwitchDex updater (see docs/DEPLOY.md).
+                </div>
+              </div>
+            </div>
+          )}
+
+          {verInfo && verInfo.error && (
+            <div style={{fontSize:12,color:"#6e7681",marginTop:10}}>
+              The version check couldn't reach GitHub ({verInfo.error}). Your installed version is shown above.
+            </div>
+          )}
         </div>
       </>}
 

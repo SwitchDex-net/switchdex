@@ -1,10 +1,14 @@
 """FastAPI entrypoint. Initialises the DB and seeds demo devices on first run."""
 import secrets
+import time
+import logging
 from contextlib import asynccontextmanager
 
+import requests
 from fastapi import FastAPI
 from sqlalchemy import select, func
 
+from . import __version__
 from .db import init_db, SessionLocal, Device, User, AuthSettings
 from .api import router, ws_router
 from .auth_api import router as auth_router
@@ -74,7 +78,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SwitchDex API", version="2.0.6", lifespan=lifespan)
+app = FastAPI(title="SwitchDex API", version=__version__, lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(router)
 app.include_router(ws_router)
@@ -91,3 +95,71 @@ app.include_router(automations_router)
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── version / update check ──────────────────────────────────────────────────
+_GH_RELEASES_API = "https://api.github.com/repos/switchdex-net/switchdex/releases/latest"
+_update_cache = {"ts": 0.0, "data": None}
+_UPDATE_CACHE_TTL = 3600  # seconds — don't hammer GitHub on every Settings load
+_log = logging.getLogger("switchdex.version")
+
+
+def _parse_semver(v: str):
+    """'v2.0.6' / '2.0.6' -> (2,0,6). Returns (0,0,0) on anything unparseable."""
+    nums = (v or "").lstrip("vV").split("-")[0].split(".")
+    out = []
+    for n in nums[:3]:
+        try:
+            out.append(int(n))
+        except ValueError:
+            out.append(0)
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out)
+
+
+@app.get("/api/version")
+async def version():
+    """Current SwitchDex version plus the latest published GitHub release.
+
+    The GitHub lookup is cached for an hour and fails soft: if GitHub is
+    unreachable the endpoint still returns the current version with
+    update_available=false and a note, so the Settings page always renders.
+    """
+    current = __version__
+    now = time.time()
+    latest = None
+    notes_url = None
+    checked = False
+    error = None
+
+    if _update_cache["data"] and (now - _update_cache["ts"] < _UPDATE_CACHE_TTL):
+        latest = _update_cache["data"].get("latest")
+        notes_url = _update_cache["data"].get("notes_url")
+        checked = True
+    else:
+        try:
+            r = requests.get(_GH_RELEASES_API, timeout=8,
+                             headers={"Accept": "application/vnd.github+json"})
+            if r.ok:
+                j = r.json()
+                latest = (j.get("tag_name") or "").lstrip("vV")
+                notes_url = j.get("html_url")
+                _update_cache["data"] = {"latest": latest, "notes_url": notes_url}
+                _update_cache["ts"] = now
+                checked = True
+            else:
+                error = f"GitHub returned HTTP {r.status_code}"
+        except Exception as e:  # noqa: BLE001
+            error = f"update check unavailable: {e}"
+            _log.info("version check failed: %s", e)
+
+    update_available = bool(latest) and _parse_semver(latest) > _parse_semver(current)
+    return {
+        "current": current,
+        "latest": latest,
+        "update_available": update_available,
+        "release_notes_url": notes_url,
+        "checked": checked,
+        "error": error,
+    }
