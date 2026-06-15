@@ -3,6 +3,17 @@
 All notable changes to SwitchDex are recorded here. Versions follow semantic
 versioning (MAJOR.MINOR.PATCH).
 
+## [2.0.7]
+
+### Added
+- **Settings → About** shows the installed version, checks GitHub for the latest
+  published release, and indicates whether an update is available (with a link to
+  the release notes). The check is cached for an hour and fails soft — if GitHub
+  is unreachable the installed version still displays. This surfaces updates only;
+  applying them remains a deliberate action from the Proxmox host (see the
+  updater in `docs/DEPLOY.md`), keeping the web app out of the privileged
+  host-control path.
+
 ## [2.0.6]
 
 ### Added
